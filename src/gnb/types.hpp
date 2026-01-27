@@ -130,11 +130,12 @@ struct NgapUeContext
 
     int64_t amfUeNgapId = -1; // -1 if not assigned
     int64_t ranUeNgapId{};
-    int associatedAmfId{};
+    int associatedAmfId = -1;
     int uplinkStream{};
     int downlinkStream{};
     AggregateMaximumBitRate ueAmbr{};
     std::set<int> pduSessions{};
+    std::optional<NetworkSlice> requestedNssai{};
 
     explicit NgapUeContext(int ctxId) : ctxId(ctxId)
     {
