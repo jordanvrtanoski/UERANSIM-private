@@ -10,6 +10,9 @@
 
 #include <utils/common.hpp>
 
+#include <arpa/inet.h>
+#include <cstring>
+
 namespace nas
 {
 
@@ -1083,8 +1086,43 @@ Json ToJson(const IEPduAddress &v)
     {
     case EPduSessionType::IPV4:
     case EPduSessionType::IPV6:
-    case EPduSessionType::IPV4V6:
         return utils::OctetStringToIp(v.pduAddressInformation);
+    case EPduSessionType::IPV4V6: {
+        // TS 24.501: pduAddressInformation is either IPv4(4)+IPv6(16) or IPv4(4)+IPv6 IID(8). Display both.
+        if (v.pduAddressInformation.length() != 20 && v.pduAddressInformation.length() != 12)
+            return v.pduAddressInformation.toHexString();
+
+        uint8_t v4buf[4] = {0};
+        std::memcpy(v4buf, v.pduAddressInformation.data(), 4);
+
+        char v4str[INET_ADDRSTRLEN] = {0};
+        if (inet_ntop(AF_INET, v4buf, v4str, sizeof(v4str)) == nullptr)
+        {
+            return v.pduAddressInformation.toHexString();
+        }
+
+        if (v.pduAddressInformation.length() == 20)
+        {
+            uint8_t v6buf[16] = {0};
+            std::memcpy(v6buf, v.pduAddressInformation.data() + 4, 16);
+            char v6str[INET6_ADDRSTRLEN] = {0};
+            if (inet_ntop(AF_INET6, v6buf, v6str, sizeof(v6str)) == nullptr)
+                return v.pduAddressInformation.toHexString();
+            return std::string{v4str} + "," + std::string{v6str};
+        }
+
+        // 12 bytes: IPv4 + IPv6 IID -> display as link-local.
+        in6_addr ll{};
+        ll.s6_addr[0] = 0xfe;
+        ll.s6_addr[1] = 0x80;
+        std::memcpy(ll.s6_addr + 8, v.pduAddressInformation.data() + 4, 8);
+
+        char llstr[INET6_ADDRSTRLEN] = {0};
+        if (inet_ntop(AF_INET6, &ll, llstr, sizeof(llstr)) == nullptr)
+            return v.pduAddressInformation.toHexString();
+
+        return std::string{v4str} + "," + std::string{llstr};
+    }
     case EPduSessionType::UNSTRUCTURED:
     case EPduSessionType::ETHERNET:
         return v.pduAddressInformation.toHexString();

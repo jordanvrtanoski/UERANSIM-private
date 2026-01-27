@@ -15,6 +15,9 @@
 #include <utils/common.hpp>
 #include <utils/constants.hpp>
 
+#include <arpa/inet.h>
+#include <cstring>
+
 static constexpr const int SWITCH_OFF_TIMER_ID = 1;
 static constexpr const int SWITCH_OFF_DELAY = 500;
 
@@ -159,10 +162,20 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
         return;
     }
 
-    if (pduSession->pduAddress->sessionType != nas::EPduSessionType::IPV4 ||
-        pduSession->sessionType != nas::EPduSessionType::IPV4)
+    if (pduSession->pduAddress->sessionType != pduSession->sessionType)
     {
-        m_logger->err("Connection could not setup. PDU session type is not supported.");
+        m_logger->err("Connection could not setup. PDU session type mismatch. sessionType[%s] pduAddressType[%s].",
+                      nas::utils::EnumToString(pduSession->sessionType),
+                      nas::utils::EnumToString(pduSession->pduAddress->sessionType));
+        return;
+    }
+
+    auto sessionType = pduSession->sessionType;
+    if (sessionType != nas::EPduSessionType::IPV4 && sessionType != nas::EPduSessionType::IPV6 &&
+        sessionType != nas::EPduSessionType::IPV4V6)
+    {
+        m_logger->err("Connection could not setup. PDU session type [%s] is not supported.",
+                      nas::utils::EnumToString(sessionType));
         return;
     }
 
@@ -194,21 +207,205 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
         return;
     }
 
-    std::string ipAddress = utils::OctetStringToIp(pduSession->pduAddress->pduAddressInformation);
+    const auto &pduAddrInfo = pduSession->pduAddress->pduAddressInformation;
+    std::string ipv4Address{};
+    std::string ipv6Address{};
+    std::string ipv6LinkLocal{};
 
-    bool r = tun::TunConfigure(allocatedName, ipAddress, requestedNetmask, cons::TunMtu, m_base->config->configureRouting, error);
-    if (!r || error.length() > 0)
+    auto inetToString = [](int af, const void *src) -> std::string {
+        char buf[INET6_ADDRSTRLEN] = {0};
+        if (inet_ntop(af, src, buf, sizeof(buf)) == nullptr)
+            return {};
+        return std::string{buf};
+    };
+
+    auto ipv6LinkLocalFromIid = [&](const uint8_t *iid) -> std::string {
+        in6_addr a{};
+        a.s6_addr[0] = 0xfe;
+        a.s6_addr[1] = 0x80;
+        std::memcpy(a.s6_addr + 8, iid, 8);
+        return inetToString(AF_INET6, &a);
+    };
+
+    if (sessionType == nas::EPduSessionType::IPV4)
     {
-        m_logger->err("TUN configuration failure [%s]", error.c_str());
-        return;
+        if (pduAddrInfo.length() != 4)
+        {
+            m_logger->err("Connection could not setup. Unexpected PDU IPv4 address length[%d].",
+                          static_cast<int>(pduAddrInfo.length()));
+            return;
+        }
+        ipv4Address = inetToString(AF_INET, pduAddrInfo.data());
+        if (ipv4Address.empty())
+        {
+            m_logger->err("Connection could not setup. Invalid PDU IPv4 address.");
+            return;
+        }
+
+        bool r = tun::TunConfigure(allocatedName, ipv4Address, requestedNetmask, cons::TunMtu,
+                                   m_base->config->configureRouting, error);
+        if (!r || !error.empty())
+        {
+            m_logger->err("TUN configuration failure [%s]", error.c_str());
+            return;
+        }
+    }
+    else if (sessionType == nas::EPduSessionType::IPV6)
+    {
+        if (pduAddrInfo.length() == 16)
+        {
+            ipv6Address = inetToString(AF_INET6, pduAddrInfo.data());
+        }
+        else if (pduAddrInfo.length() == 8)
+        {
+            // TS 24.501: for IPv6 PDU session type, network may provide only the interface identifier.
+            ipv6LinkLocal = ipv6LinkLocalFromIid(pduAddrInfo.data());
+            if (!ipv6LinkLocal.empty())
+                m_logger->debug("PDU IPv6 address provided as interface identifier (8 octets). Using link-local[%s].",
+                                ipv6LinkLocal.c_str());
+        }
+        else
+        {
+            m_logger->err("Connection could not setup. Unexpected PDU IPv6 address length[%d] value[%s].",
+                          static_cast<int>(pduAddrInfo.length()), pduAddrInfo.toHexString().c_str());
+            return;
+        }
+
+        if (ipv6Address.empty() && ipv6LinkLocal.empty())
+        {
+            m_logger->err("Connection could not setup. Invalid PDU IPv6 address.");
+            return;
+        }
+
+        if (!ipv6LinkLocal.empty())
+        {
+            std::string errorLl{};
+            bool rLl = tun::TunConfigure6(allocatedName, ipv6LinkLocal, 64, cons::TunMtu, m_base->config->configureRouting,
+                                          errorLl);
+            if (!rLl || !errorLl.empty())
+            {
+                m_logger->err("TUN IPv6 link-local configuration failure [%s]", errorLl.c_str());
+                return;
+            }
+        }
+
+        if (!ipv6Address.empty())
+        {
+            int prefix = m_base->config->tunIpv6Prefix.value_or(64);
+            bool r = tun::TunConfigure6(allocatedName, ipv6Address, prefix, cons::TunMtu, m_base->config->configureRouting,
+                                        error);
+            if (!r || !error.empty())
+            {
+                m_logger->err("TUN configuration failure [%s]", error.c_str());
+                return;
+            }
+        }
+    }
+    else // IPV4V6
+    {
+        if (pduAddrInfo.length() == 20)
+        {
+            ipv4Address = inetToString(AF_INET, pduAddrInfo.data());
+            ipv6Address = inetToString(AF_INET6, pduAddrInfo.data() + 4);
+        }
+        else if (pduAddrInfo.length() == 12)
+        {
+            // TS 24.501: for IPv4v6, network may provide IPv4 address + IPv6 interface identifier.
+            ipv4Address = inetToString(AF_INET, pduAddrInfo.data());
+            ipv6LinkLocal = ipv6LinkLocalFromIid(pduAddrInfo.data() + 4);
+            if (!ipv6LinkLocal.empty())
+                m_logger->debug("PDU IPv6 address in IPv4v6 provided as interface identifier (8 octets). Using link-local[%s].",
+                                ipv6LinkLocal.c_str());
+        }
+        else
+        {
+            m_logger->err("Connection could not setup. Unexpected PDU IPv4v6 address length[%d] value[%s].",
+                          static_cast<int>(pduAddrInfo.length()), pduAddrInfo.toHexString().c_str());
+            return;
+        }
+
+        if (ipv4Address.empty())
+        {
+            m_logger->err("Connection could not setup. Invalid PDU IPv4v6 address.");
+            return;
+        }
+        if (ipv6Address.empty() && ipv6LinkLocal.empty())
+        {
+            m_logger->err("Connection could not setup. Invalid PDU IPv6 address in IPv4v6 PDU address.");
+            return;
+        }
+
+        bool r4 = tun::TunConfigure(allocatedName, ipv4Address, requestedNetmask, cons::TunMtu,
+                                    m_base->config->configureRouting, error);
+        if (!r4 || !error.empty())
+        {
+            m_logger->err("TUN configuration failure [%s]", error.c_str());
+            return;
+        }
+
+        if (!ipv6LinkLocal.empty())
+        {
+            std::string errorLl{};
+            bool rLl = tun::TunConfigure6(allocatedName, ipv6LinkLocal, 64, cons::TunMtu, m_base->config->configureRouting,
+                                          errorLl);
+            if (!rLl || !errorLl.empty())
+            {
+                m_logger->err("TUN IPv6 link-local configuration failure [%s]", errorLl.c_str());
+                return;
+            }
+        }
+
+        if (!ipv6Address.empty())
+        {
+            int prefix = m_base->config->tunIpv6Prefix.value_or(64);
+            std::string error6{};
+            bool r6 = tun::TunConfigure6(allocatedName, ipv6Address, prefix, cons::TunMtu, m_base->config->configureRouting,
+                                         error6);
+            if (!r6 || !error6.empty())
+            {
+                m_logger->err("TUN IPv6 configuration failure [%s]", error6.c_str());
+                return;
+            }
+        }
     }
 
     auto *task = new TunTask(m_base, psi, fd);
     m_tunTasks[psi] = task;
     task->start();
 
-    m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s] is up.", pduSession->psi,
-                   allocatedName.c_str(), ipAddress.c_str());
+    if (sessionType == nas::EPduSessionType::IPV4)
+    {
+        m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s] is up.",
+                       pduSession->psi, allocatedName.c_str(), ipv4Address.c_str());
+    }
+    else if (sessionType == nas::EPduSessionType::IPV6)
+    {
+        if (!ipv6Address.empty())
+        {
+            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s/%d] is up.",
+                           pduSession->psi, allocatedName.c_str(), ipv6Address.c_str(),
+                           m_base->config->tunIpv6Prefix.value_or(64));
+        }
+        else
+        {
+            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s] is up.",
+                           pduSession->psi, allocatedName.c_str(), ipv6LinkLocal.c_str());
+        }
+    }
+    else
+    {
+        if (!ipv6Address.empty())
+        {
+            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s, %s/%d] is up.",
+                           pduSession->psi, allocatedName.c_str(), ipv4Address.c_str(), ipv6Address.c_str(),
+                           m_base->config->tunIpv6Prefix.value_or(64));
+        }
+        else
+        {
+            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s, %s] is up.",
+                           pduSession->psi, allocatedName.c_str(), ipv4Address.c_str(), ipv6LinkLocal.c_str());
+        }
+    }
 }
 
 } // namespace nr::ue

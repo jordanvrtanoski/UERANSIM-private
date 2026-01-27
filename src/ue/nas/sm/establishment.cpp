@@ -54,7 +54,8 @@ void NasSm::sendEstablishmentRequest(const SessionConfig &config)
     }
 
     /* Control the received config */
-    if (config.type != nas::EPduSessionType::IPV4)
+    if (config.type != nas::EPduSessionType::IPV4 && config.type != nas::EPduSessionType::IPV6 &&
+        config.type != nas::EPduSessionType::IPV4V6)
     {
         m_logger->err("PDU session type [%s] is not supported", nas::utils::EnumToString(config.type));
         return;
@@ -101,8 +102,16 @@ void NasSm::sendEstablishmentRequest(const SessionConfig &config)
     nas::ProtocolConfigurationOptions opt{};
     opt.additionalParams.push_back(std::make_unique<nas::ProtocolConfigurationItem>(
         nas::EProtocolConfigId::CONT_ID_UP_IP_ADDRESS_ALLOCATION_VIA_NAS_SIGNALLING, true, OctetString::Empty()));
-    opt.additionalParams.push_back(std::make_unique<nas::ProtocolConfigurationItem>(
-        nas::EProtocolConfigId::CONT_ID_DOWN_DNS_SERVER_IPV4_ADDRESS, true, OctetString::Empty()));
+    if (config.type == nas::EPduSessionType::IPV4 || config.type == nas::EPduSessionType::IPV4V6)
+    {
+        opt.additionalParams.push_back(std::make_unique<nas::ProtocolConfigurationItem>(
+            nas::EProtocolConfigId::CONT_ID_UP_DNS_SERVER_IPV4_ADDRESS_REQUEST, true, OctetString::Empty()));
+    }
+    if (config.type == nas::EPduSessionType::IPV6 || config.type == nas::EPduSessionType::IPV4V6)
+    {
+        opt.additionalParams.push_back(std::make_unique<nas::ProtocolConfigurationItem>(
+            nas::EProtocolConfigId::CONT_ID_UP_DNS_SERVER_IPV6_ADDRESS_REQUEST, true, OctetString::Empty()));
+    }
 
     nas::IEExtendedProtocolConfigurationOptions iePco{};
     iePco.configurationProtocol = nas::EConfigurationProtocol::PPP;
@@ -115,7 +124,7 @@ void NasSm::sendEstablishmentRequest(const SessionConfig &config)
     req->pduSessionId = psi;
     req->integrityProtectionMaximumDataRate = MakeIntegrityMaxRate(m_base->config->integrityMaxRate);
     req->pduSessionType = nas::IEPduSessionType{};
-    req->pduSessionType->pduSessionType = nas::EPduSessionType::IPV4;
+    req->pduSessionType->pduSessionType = config.type;
     req->sscMode = nas::IESscMode{};
     req->sscMode->sscMode = nas::ESscMode::SSC_MODE_1;
     req->extendedProtocolConfigurationOptions = std::move(iePco);

@@ -270,12 +270,48 @@ void utils::Sleep(int ms)
 
 std::string utils::OctetStringToIp(const OctetString &address)
 {
+    // IPv4 (4), IPv6 (16), IPv6 IID (8), IPv4v6 (20 = 4+16), or IPv4 + IPv6 IID (12 = 4+8).
+    // For mixed types prefer IPv4 for backward compatibility.
+    auto inetToString = [](int af, const void *src) -> std::string {
+        char buf[INET6_ADDRSTRLEN] = {0};
+        if (inet_ntop(af, src, buf, sizeof(buf)) == nullptr)
+            return {};
+        return std::string{buf};
+    };
+
     if (address.length() == 4)
+        return inetToString(AF_INET, address.data());
+
+    if (address.length() == 16)
+        return inetToString(AF_INET6, address.data());
+
+    if (address.length() == 20)
+        return inetToString(AF_INET, address.data());
+
+    if (address.length() == 8)
     {
-        char buffer[20] = {0};
-        sprintf(buffer, "%d.%d.%d.%d", address.getI(0), address.getI(1), address.getI(2), address.getI(3));
-        return std::string{buffer};
+        in6_addr ll{};
+        ll.s6_addr[0] = 0xfe;
+        ll.s6_addr[1] = 0x80;
+        std::memcpy(ll.s6_addr + 8, address.data(), 8);
+        auto s = inetToString(AF_INET6, &ll);
+        return s.empty() ? address.toHexString() : s;
     }
+
+    if (address.length() == 12)
+    {
+        in6_addr ll{};
+        ll.s6_addr[0] = 0xfe;
+        ll.s6_addr[1] = 0x80;
+        std::memcpy(ll.s6_addr + 8, address.data() + 4, 8);
+
+        auto v4 = inetToString(AF_INET, address.data());
+        auto v6ll = inetToString(AF_INET6, &ll);
+        if (v4.empty() || v6ll.empty())
+            return address.toHexString();
+        return v4 + "," + v6ll;
+    }
+
     return address.toHexString();
 }
 

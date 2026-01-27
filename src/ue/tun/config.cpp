@@ -81,6 +81,12 @@ static std::string ExecStrict(const std::string &cmd)
     return output;
 }
 
+static void ExecBestEffort(const std::string &cmd)
+{
+    std::string output;
+    (void)ExecOutput(cmd.c_str(), output);
+}
+
 static const char *NextInterfaceName(const std::string &prefix)
 {
     std::set<std::string> names;
@@ -157,6 +163,16 @@ static void TunSetIpAndUp(const char *ifName, const char *ipAddr, const char *ne
         throw LibError("ioctl(SIOCSIFFLAGS)", errno);
 
     close(sockFd);
+}
+
+static void TunSetIpv6AndUp(const std::string &ifName, const std::string &ipv6Addr, int ipv6Prefix, int mtu)
+{
+    // Idempotent: delete the same addr if it already exists.
+    ExecBestEffort("ip -6 addr del " + ipv6Addr + "/" + std::to_string(ipv6Prefix) + " dev " + ifName);
+
+    ExecStrict("ip -6 addr add " + ipv6Addr + "/" + std::to_string(ipv6Prefix) + " dev " + ifName);
+    ExecStrict("ip link set dev " + ifName + " mtu " + std::to_string(mtu));
+    ExecStrict("ip link set dev " + ifName + " up");
 }
 
 static void ConfigureRtTables(const std::string &table_name)
@@ -377,6 +393,37 @@ void ConfigureTun(const char *tunName, const char *ipAddr, const char *netmask, 
         RemoveExistingIpRoutes(tunName, table_name);
         AddIpRoutes(tunName, table_name);
     }
+}
+
+	void ConfigureTun6(const char *tunName, const char *ipv6Addr, int ipv6Prefix, int mtu, bool configureRoute)
+	{
+	    // acquire the configuration lock
+	    const std::lock_guard<std::mutex> lock(configMutex);
+
+	    TunSetIpv6AndUp(tunName, ipv6Addr, ipv6Prefix, mtu);
+
+	    // Best-effort IPv6 autoconf/RA knobs (needed when the core assigns only an IPv6 interface identifier and relies
+	    // on SLAAC/RA for global prefix and default route).
+	    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".disable_ipv6=0");
+	    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".autoconf=1");
+	    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".accept_ra=2");
+	    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".accept_ra_defrtr=1");
+
+	    if (!configureRoute)
+	        return;
+
+    std::string table_name = ROUTING_TABLE_PREFIX + std::string(tunName);
+    ConfigureRtTables(table_name);
+
+    // Prefer /128 to match "from <addr>" semantics.
+    std::string from = std::string(ipv6Addr) + "/128";
+
+    // Make idempotent without relying on parsing `ip -6` output.
+    ExecBestEffort("ip -6 rule del from " + from + " table " + table_name);
+    ExecBestEffort("ip -6 route del default dev " + std::string(tunName) + " table " + table_name);
+
+    ExecStrict("ip -6 rule add from " + from + " table " + table_name);
+    ExecStrict("ip -6 route add default dev " + std::string(tunName) + " table " + table_name);
 }
 
 } // namespace nr::ue::tun
