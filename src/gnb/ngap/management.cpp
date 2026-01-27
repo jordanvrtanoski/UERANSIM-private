@@ -33,11 +33,12 @@ void NgapTask::createAmfContext(const GnbAmfConfig &conf)
     m_amfCtx[ctx->ctxId] = ctx;
 }
 
-void NgapTask::createUeContext(int ueId, int32_t &requestedSliceType)
+void NgapTask::createUeContext(int ueId, int32_t &requestedSliceType, std::optional<NetworkSlice> requestedNssai)
 {
     auto *ctx = new NgapUeContext(ueId);
     ctx->amfUeNgapId = -1;
     ctx->ranUeNgapId = ++m_ueNgapIdCounter;
+    ctx->requestedNssai = std::move(requestedNssai);
 
     m_ueCtx[ctx->ctxId] = ctx;
 
