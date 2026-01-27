@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <unordered_map>
 
@@ -56,6 +57,38 @@ class NgapTask : public NtsTask
     uint32_t m_downlinkTeidCounter;
     bool m_isInitialized;
 
+    struct FiveGSTmsiKey
+    {
+        int amfSetId{};
+        int amfPointer{};
+        uint32_t tmsi{};
+
+        bool operator==(const FiveGSTmsiKey &other) const
+        {
+            return amfSetId == other.amfSetId && amfPointer == other.amfPointer && tmsi == other.tmsi;
+        }
+    };
+
+    struct FiveGSTmsiKeyHash
+    {
+        size_t operator()(const FiveGSTmsiKey &k) const
+        {
+            // Simple mix of three small integers. (No security requirements.)
+            size_t h = std::hash<int>{}(k.amfSetId);
+            h ^= std::hash<int>{}(k.amfPointer) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+            h ^= std::hash<uint32_t>{}(k.tmsi) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+
+    struct PagingAmfHint
+    {
+        int amfCtxId{};
+        int64_t lastSeenMs{};
+    };
+
+    std::unordered_map<FiveGSTmsiKey, PagingAmfHint, FiveGSTmsiKeyHash> m_pagingAmfHints;
+
     friend class GnbCmdHandler;
 
   public:
@@ -71,13 +104,17 @@ class NgapTask : public NtsTask
     /* Utility functions */
     void createAmfContext(const GnbAmfConfig &config);
     NgapAmfContext *findAmfContext(int ctxId);
-    void createUeContext(int ueId, int32_t &requestedSliceType, std::optional<NetworkSlice> requestedNssai);
+    void createUeContext(int ueId, int32_t &requestedSliceType, std::optional<NetworkSlice> requestedNssai,
+                         const std::optional<GutiMobileIdentity> &sTmsi);
     NgapUeContext *findUeContext(int ctxId);
     NgapUeContext *findUeByRanId(int64_t ranUeNgapId);
     NgapUeContext *findUeByAmfId(int64_t amfUeNgapId);
     NgapUeContext *findUeByNgapIdPair(int amfCtxId, const NgapIdPair &idPair);
     void deleteUeContext(int ueId);
     void deleteAmfContext(int amfId);
+    void rememberPagingHint(const GutiMobileIdentity &sTmsi, int amfId);
+    std::optional<int> findPagingHint(const GutiMobileIdentity &sTmsi);
+    void requestAmfConnectionIfNeeded(int amfId);
 
     /* Interface management */
     void handleAssociationSetup(int amfId, int ascId, int inCount, int outCount);

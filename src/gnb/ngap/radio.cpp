@@ -48,6 +48,18 @@ void NgapTask::receivePaging(int amfId, ASN_NGAP_Paging *msg)
         return;
     }
 
+    // Cache which AMF paged this 5G-S-TMSI so Initial UE Message can be routed consistently.
+    {
+        const auto &tmsi = *ieUePagingIdentity->UEPagingIdentity.choice.fiveG_S_TMSI;
+        GutiMobileIdentity sTmsi{};
+        sTmsi.amfSetId = asn::GetBitStringInt<10>(tmsi.aMFSetID);
+        sTmsi.amfPointer = asn::GetBitStringInt<6>(tmsi.aMFPointer);
+        sTmsi.tmsi = asn::GetOctet4(tmsi.fiveG_TMSI);
+        rememberPagingHint(sTmsi, amfId);
+        m_logger->debug("Paging hint stored: amfSetId[%d] amfPointer[%d] tmsi[%u] -> AMF[%d]", sTmsi.amfSetId,
+                        sTmsi.amfPointer, static_cast<uint32_t>(sTmsi.tmsi), amfId);
+    }
+
     auto w = std::make_unique<NmGnbNgapToRrc>(NmGnbNgapToRrc::PAGING);
     w->uePagingTmsi =
         asn::UniqueCopy(*ieUePagingIdentity->UEPagingIdentity.choice.fiveG_S_TMSI, asn_DEF_ASN_NGAP_FiveG_S_TMSI);
