@@ -32,6 +32,7 @@ struct SliceInfoResult
 {
     int32_t requestedSliceType{-1};
     std::optional<NetworkSlice> requestedNssai{};
+    std::optional<nas::EMessageType> messageType{};
 };
 
 static SliceInfoResult ExtractSliceInfoAndModifyPdu(OctetString &nasPdu)
@@ -45,6 +46,8 @@ static SliceInfoResult ExtractSliceInfoAndModifyPdu(OctetString &nasPdu)
     {
         auto *mmMessage = dynamic_cast<nas::MmMessage *>(nasMessage.get());
         auto *plainMmMessage = mmMessage ? dynamic_cast<nas::PlainMmMessage *>(mmMessage) : nullptr;
+        if (plainMmMessage)
+            result.messageType = plainMmMessage->messageType;
         auto *regRequest = plainMmMessage ? dynamic_cast<nas::RegistrationRequest *>(plainMmMessage) : nullptr;
 
         if (regRequest && regRequest->requestedNSSAI.has_value())
@@ -70,7 +73,17 @@ void NgapTask::handleInitialNasTransport(int ueId, OctetString &nasPdu, int64_t 
     auto sliceInfo = ExtractSliceInfoAndModifyPdu(nasPdu);
     int32_t requestedSliceType = sliceInfo.requestedSliceType;
 
-    m_logger->debug("Initial NAS message received from UE[%d]", ueId);
+    if (sliceInfo.messageType.has_value())
+    {
+        m_logger->debug("Initial NAS message received from UE[%d] nasType[%d] requestedSst[%d] hasRequestedNssai[%s]",
+                        ueId, static_cast<int>(*sliceInfo.messageType), requestedSliceType,
+                        sliceInfo.requestedNssai.has_value() ? "yes" : "no");
+    }
+    else
+    {
+        m_logger->debug("Initial NAS message received from UE[%d] requestedSst[%d] hasRequestedNssai[%s]", ueId,
+                        requestedSliceType, sliceInfo.requestedNssai.has_value() ? "yes" : "no");
+    }
 
     if (m_ueCtx.count(ueId))
     {
@@ -78,11 +91,17 @@ void NgapTask::handleInitialNasTransport(int ueId, OctetString &nasPdu, int64_t 
         return;
     }
 
-    createUeContext(ueId, requestedSliceType, std::move(sliceInfo.requestedNssai));
+    createUeContext(ueId, requestedSliceType, std::move(sliceInfo.requestedNssai), sTmsi);
 
     auto *ueCtx = findUeContext(ueId);
     if (ueCtx == nullptr)
         return;
+    if (ueCtx->associatedAmfId < 0)
+    {
+        m_logger->err("Initial NAS transport failure. UE[%d] has no associated AMF after selection.", ueId);
+        return;
+    }
+
     auto *amfCtx = findAmfContext(ueCtx->associatedAmfId);
     if (amfCtx == nullptr)
         return;
