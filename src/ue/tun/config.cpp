@@ -117,52 +117,50 @@ static const char *NextInterfaceName(const std::string &prefix)
 
 static void TunSetIpAndUp(const char *ifName, const char *ipAddr, const char *netmask, int mtu)
 {
-    ifreq ifr{};
-    memset(&ifr, 0, sizeof(struct ifreq));
+    auto netmaskToPrefix = [](const char *mask) -> int {
+        if (mask == nullptr || *mask == '\0')
+            throw LibError("Invalid IPv4 netmask", EINVAL);
 
-    sockaddr_in sai{};
-    memset(&sai, 0, sizeof(struct sockaddr));
-    
-    sockaddr_in netmask_addr{};
-    memset(&netmask_addr, 0, sizeof(struct sockaddr_in));
+        bool isDotted = false;
+        for (const char *p = mask; *p; ++p)
+        {
+            if (*p == '.')
+            {
+                isDotted = true;
+                break;
+            }
+        }
 
-    netmask_addr.sin_family = AF_INET;
-    netmask_addr.sin_addr.s_addr = inet_addr(netmask);
+        if (!isDotted)
+        {
+            char *end = nullptr;
+            long v = strtol(mask, &end, 10);
+            if (end == mask || *end != '\0' || v < 0 || v > 32)
+                throw LibError(std::string("Invalid IPv4 prefix length: ") + mask, EINVAL);
+            return static_cast<int>(v);
+        }
 
-    int sockFd;
-    char *p;
+        in_addr a{};
+        if (inet_pton(AF_INET, mask, &a) != 1)
+            throw LibError(std::string("Invalid IPv4 netmask: ") + mask, EINVAL);
 
-    sockFd = socket(AF_INET, SOCK_DGRAM, 0);
+        uint32_t m = ntohl(a.s_addr);
+        int prefix = 0;
+        while (prefix < 32 && (m & (1u << (31 - prefix))))
+            ++prefix;
+        if ((m << prefix) != 0)
+            throw LibError(std::string("Non-contiguous IPv4 netmask: ") + mask, EINVAL);
+        return prefix;
+    };
 
-    strcpy(ifr.ifr_name, ifName);
+    int prefix = netmaskToPrefix(netmask);
 
-    sai.sin_family = AF_INET;
-    sai.sin_port = 0;
-
-    sai.sin_addr.s_addr = inet_addr(ipAddr);
-
-    p = (char *)&sai;
-    memcpy((((char *)&ifr + offsetof(struct ifreq, ifr_addr))), p, sizeof(struct sockaddr));
-
-    if (ioctl(sockFd, SIOCSIFADDR, &ifr) < 0)
-        throw LibError("ioctl(SIOCSIFADDR)", errno);
-
-    memcpy(&ifr.ifr_netmask, &netmask_addr, sizeof(struct sockaddr));
-    if (ioctl(sockFd, SIOCSIFNETMASK, &ifr) < 0)
-	throw LibError("ioctl(SIOCSIFNETMASK)", errno);
-
-    if (ioctl(sockFd, SIOCGIFFLAGS, &ifr) < 0)
-        throw LibError("ioctl(SIOCGIFFLAGS)", errno);
-
-    ifr.ifr_mtu = mtu;
-    if (ioctl(sockFd, SIOCSIFMTU, &ifr) < 0)
-        throw LibError("ioctl(SIOCSIFMTU)", errno);
-
-    ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
-    if (ioctl(sockFd, SIOCSIFFLAGS, &ifr) < 0)
-        throw LibError("ioctl(SIOCSIFFLAGS)", errno);
-
-    close(sockFd);
+    // Use `ip` for IPv4 configuration (instead of ioctl) to behave consistently across kernels and VRF setups.
+    ExecBestEffort("ip -4 addr flush dev " + std::string(ifName));
+    ExecStrict("ip -4 addr replace " + std::string(ipAddr) + "/" + std::to_string(prefix) + " dev " +
+               std::string(ifName));
+    ExecStrict("ip link set dev " + std::string(ifName) + " mtu " + std::to_string(mtu));
+    ExecStrict("ip link set dev " + std::string(ifName) + " up");
 }
 
 static void TunSetIpv6AndUp(const std::string &ifName, const std::string &ipv6Addr, int ipv6Prefix, int mtu)
