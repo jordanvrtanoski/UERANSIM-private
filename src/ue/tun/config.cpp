@@ -211,7 +211,8 @@ static void EnsureVrfAttached(const std::string &ifName, int tableId)
     bool needCreate = true;
     {
         std::string output;
-        int rc = ExecOutput(("ip -d link show dev " + vrfName).c_str(), output);
+        // `ip` prints "Device does not exist" to stderr when the VRF hasn't been created yet. Suppress to keep logs clean.
+        int rc = ExecOutput(("ip -d link show dev " + vrfName + " 2>/dev/null").c_str(), output);
         if (rc == 0)
         {
             int existingTable = -1;
