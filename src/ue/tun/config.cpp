@@ -47,7 +47,8 @@ static int ExecOutput(const char *cmd, std::string &output)
 {
     char buffer[128];
     std::string result;
-    FILE *pipe = popen(cmd, "r");
+    std::string wrapped = "{ " + std::string(cmd) + "; } 2>&1";
+    FILE *pipe = popen(wrapped.c_str(), "r");
     if (!pipe)
     {
         output = "popen() failed!";
@@ -174,10 +175,8 @@ static void TunSetIpv6AndUp(const std::string &ifName, const std::string &ipv6Ad
     // Ensure there is no competing link-local address (new TUN interfaces often get an automatic fe80:: address on UP).
     ExecBestEffort("ip -6 addr flush dev " + ifName + " scope link");
 
-    // Idempotent: delete the same addr if it already exists.
-    ExecBestEffort("ip -6 addr del " + ipv6Addr + "/" + std::to_string(ipv6Prefix) + " dev " + ifName);
-
-    ExecStrict("ip -6 addr add " + ipv6Addr + "/" + std::to_string(ipv6Prefix) + " dev " + ifName);
+    // Idempotent: replace (adds if missing) without noisy errors.
+    ExecStrict("ip -6 addr replace " + ipv6Addr + "/" + std::to_string(ipv6Prefix) + " dev " + ifName);
     ExecStrict("ip link set dev " + ifName + " mtu " + std::to_string(mtu));
     ExecStrict("ip link set dev " + ifName + " up");
 }
@@ -318,7 +317,7 @@ void ConfigureTun6(const char *tunName, const char *ipv6Addr, int ipv6Prefix, in
 
     // Do not force an IPv6 default route here: Open5GS uses RS/RA to provide prefix + default router (SLAAC), and we
     // want the kernel-learned route inside the VRF table.
-    ExecBestEffort("ip -6 route del default table " + std::to_string(vrfTable));
+    ExecBestEffort("ip -6 route del default table " + std::to_string(vrfTable) + " 2>/dev/null");
 }
 
 } // namespace nr::ue::tun

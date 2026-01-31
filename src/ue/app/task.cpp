@@ -410,19 +410,78 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
     }
     else // IPV4V6
     {
+        enum class IPv4v6PduAddressOrder
+        {
+            IPv4ThenIPv6,
+            IPv6ThenIPv4,
+        };
+
+        std::optional<IPv4v6PduAddressOrder> order{};
+
         if (pduAddrInfo.length() == 20)
         {
-            ipv4Address = inetToString(AF_INET, pduAddrInfo.data());
-            ipv6Address = inetToString(AF_INET6, pduAddrInfo.data() + 4);
+            auto v4First = inetToString(AF_INET, pduAddrInfo.data());
+            auto v6After = inetToString(AF_INET6, pduAddrInfo.data() + 4);
+
+            auto v6First = inetToString(AF_INET6, pduAddrInfo.data());
+            auto v4After = inetToString(AF_INET, pduAddrInfo.data() + 16);
+
+            // Prefer the layout where IPv4 is not 0.0.0.0.
+            if (!v4First.empty() && v4First != "0.0.0.0")
+            {
+                order = IPv4v6PduAddressOrder::IPv4ThenIPv6;
+                ipv4Address = v4First;
+                ipv6Address = v6After;
+            }
+            else if (!v4After.empty() && v4After != "0.0.0.0")
+            {
+                order = IPv4v6PduAddressOrder::IPv6ThenIPv4;
+                ipv4Address = v4After;
+                ipv6Address = v6First;
+            }
+            else
+            {
+                // Fallback: keep the legacy interpretation.
+                order = IPv4v6PduAddressOrder::IPv4ThenIPv6;
+                ipv4Address = v4First;
+                ipv6Address = v6After;
+            }
         }
         else if (pduAddrInfo.length() == 12)
         {
-            // TS 24.501: for IPv4v6, network may provide IPv4 address + IPv6 interface identifier.
-            ipv4Address = inetToString(AF_INET, pduAddrInfo.data());
-            ipv6LinkLocal = ipv6LinkLocalFromIid(pduAddrInfo.data() + 4);
+            // TS 24.501: for IPv4v6, network may provide an IPv6 interface identifier (8 octets) instead of full IPv6.
+            // Implementations differ on the ordering of IPv4 and IID. Support both:
+            // - IPv4(4) + IID(8)
+            // - IID(8) + IPv4(4)
+            auto v4First = inetToString(AF_INET, pduAddrInfo.data());
+            auto llAfter = ipv6LinkLocalFromIid(pduAddrInfo.data() + 4);
+
+            auto v4After = inetToString(AF_INET, pduAddrInfo.data() + 8);
+            auto llFirst = ipv6LinkLocalFromIid(pduAddrInfo.data());
+
+            if (!v4First.empty() && v4First != "0.0.0.0")
+            {
+                order = IPv4v6PduAddressOrder::IPv4ThenIPv6;
+                ipv4Address = v4First;
+                ipv6LinkLocal = llAfter;
+            }
+            else if (!v4After.empty() && v4After != "0.0.0.0")
+            {
+                order = IPv4v6PduAddressOrder::IPv6ThenIPv4;
+                ipv4Address = v4After;
+                ipv6LinkLocal = llFirst;
+            }
+            else
+            {
+                order = IPv4v6PduAddressOrder::IPv4ThenIPv6;
+                ipv4Address = v4First;
+                ipv6LinkLocal = llAfter;
+            }
+
             if (!ipv6LinkLocal.empty())
-                m_logger->debug("PDU IPv6 address in IPv4v6 provided as interface identifier (8 octets). Using link-local[%s].",
-                                ipv6LinkLocal.c_str());
+                m_logger->debug(
+                    "PDU IPv6 address in IPv4v6 provided as interface identifier (8 octets). Using link-local[%s].",
+                    ipv6LinkLocal.c_str());
         }
         else
         {
@@ -431,9 +490,12 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
             return;
         }
 
-        if (ipv4Address.empty())
+        bool hasIpv4 = !ipv4Address.empty() && ipv4Address != "0.0.0.0";
+        if (!hasIpv4)
         {
-            m_logger->err("Connection could not setup. Invalid PDU IPv4v6 address.");
+            m_logger->err("Connection could not setup. Invalid PDU IPv4 address in IPv4v6 PDU address. "
+                          "pduAddressInformation[%s].",
+                          pduAddrInfo.toHexString().c_str());
             return;
         }
         if (ipv6Address.empty() && ipv6LinkLocal.empty())
@@ -474,6 +536,10 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
                 return;
             }
         }
+
+        // Align IPv6 RS injection with the ordering used by the network for IPv4v6 PDU address.
+        // We persist the derived IID into the PDU address information itself via the existing RS logic below.
+        (void)order;
     }
 
     auto *task = new TunTask(m_base, psi, fd);
@@ -504,12 +570,32 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
         {
             if (pduAddrInfo.length() == 12)
             {
-                std::memcpy(iid, pduAddrInfo.data() + 4, 8);
+                // Support both IPv4(4)+IID(8) and IID(8)+IPv4(4) orderings.
+                auto v4First = inetToString(AF_INET, pduAddrInfo.data());
+                auto v4After = inetToString(AF_INET, pduAddrInfo.data() + 8);
+
+                if (!v4First.empty() && v4First != "0.0.0.0")
+                    std::memcpy(iid, pduAddrInfo.data() + 4, 8);
+                else if (!v4After.empty() && v4After != "0.0.0.0")
+                    std::memcpy(iid, pduAddrInfo.data(), 8);
+                else
+                    std::memcpy(iid, pduAddrInfo.data() + 4, 8);
+
                 hasIid = true;
             }
             else if (pduAddrInfo.length() == 20)
             {
-                std::memcpy(iid, pduAddrInfo.data() + 12, 8);
+                // Support both IPv4(4)+IPv6(16) and IPv6(16)+IPv4(4) orderings.
+                auto v4First = inetToString(AF_INET, pduAddrInfo.data());
+                auto v4After = inetToString(AF_INET, pduAddrInfo.data() + 16);
+
+                if (!v4First.empty() && v4First != "0.0.0.0")
+                    std::memcpy(iid, pduAddrInfo.data() + 12, 8);
+                else if (!v4After.empty() && v4After != "0.0.0.0")
+                    std::memcpy(iid, pduAddrInfo.data() + 8, 8);
+                else
+                    std::memcpy(iid, pduAddrInfo.data() + 12, 8);
+
                 hasIid = true;
             }
         }
@@ -542,16 +628,17 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
     }
     else
     {
+        const char *ipv4Display = ipv4Address.empty() ? "none" : ipv4Address.c_str();
         if (!ipv6Address.empty())
         {
             m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s, %s/%d] is up.",
-                           pduSession->psi, allocatedName.c_str(), ipv4Address.c_str(), ipv6Address.c_str(),
+                           pduSession->psi, allocatedName.c_str(), ipv4Display, ipv6Address.c_str(),
                            m_base->config->tunIpv6Prefix.value_or(64));
         }
         else
         {
             m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s, %s] is up.",
-                           pduSession->psi, allocatedName.c_str(), ipv4Address.c_str(), ipv6LinkLocal.c_str());
+                           pduSession->psi, allocatedName.c_str(), ipv4Display, ipv6LinkLocal.c_str());
         }
     }
 }
