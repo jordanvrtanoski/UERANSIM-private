@@ -215,9 +215,11 @@ void NgapTask::receiveSessionResourceSetupRequest(int amfId, ASN_NGAP_PDUSession
 
 std::optional<NgapCause> NgapTask::setupPduSessionResource(NgapUeContext *ue, PduSessionResource *resource)
 {
-    if (resource->sessionType != PduSessionType::IPv4)
+    if (resource->sessionType != PduSessionType::IPv4 && resource->sessionType != PduSessionType::IPv6 &&
+        resource->sessionType != PduSessionType::IPv4v6)
     {
-        m_logger->err("PDU session resource could not setup: Only IPv4 is supported");
+        m_logger->err("PDU session resource could not setup: session type is not supported psi[%d] type[%d]",
+                      static_cast<int>(resource->psi), static_cast<int>(resource->sessionType));
         return NgapCause::RadioNetwork_unspecified;
     }
 
