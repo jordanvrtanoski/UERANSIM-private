@@ -20,9 +20,94 @@
 
 static constexpr const int SWITCH_OFF_TIMER_ID = 1;
 static constexpr const int SWITCH_OFF_DELAY = 500;
+static constexpr const int IPV6_RS_TIMER_BASE = 100;
+static constexpr const int DEFAULT_IPV6_RS_RETRY_COUNT = 2;     // total attempts = 1 + retry count
+static constexpr const int DEFAULT_IPV6_RS_RETRY_PERIOD_MS = 1000;
 
 namespace nr::ue
 {
+
+static uint16_t OnesComplementChecksum(const uint8_t *data, size_t len)
+{
+    uint32_t sum = 0;
+    size_t i = 0;
+
+    while (i + 1 < len)
+    {
+        sum += static_cast<uint16_t>((static_cast<uint16_t>(data[i]) << 8) | static_cast<uint16_t>(data[i + 1]));
+        i += 2;
+    }
+    if (i < len)
+        sum += static_cast<uint16_t>(static_cast<uint16_t>(data[i]) << 8);
+
+    while (sum >> 16)
+        sum = (sum & 0xFFFFu) + (sum >> 16);
+
+    return static_cast<uint16_t>(~sum);
+}
+
+static OctetString BuildIpv6RouterSolicitation(const uint8_t iid[8])
+{
+    // Minimal IPv6 Router Solicitation (RFC4861), carried over the PDU session user-plane.
+    // Open5GS SMF detects RS and responds with RA that contains the /64 prefix for SLAAC.
+    //
+    // IPv6 header (40) + ICMPv6 RS header (8)
+    // - src: fe80::IID
+    // - dst: ff02::2 (all-routers multicast)
+    // - next: 58 (ICMPv6)
+    // - hop limit: 255
+    // Note: Open5GS RS detection does not depend on checksum, but compute it for correctness/interoperability.
+    uint8_t buf[48] = {0};
+
+    buf[0] = 0x60; // version 6
+    buf[1] = 0x00;
+    buf[2] = 0x00;
+    buf[3] = 0x01;
+
+    // payload length: 8 bytes
+    buf[4] = 0x00;
+    buf[5] = 0x08;
+    buf[6] = 0x3a; // next header: ICMPv6 (58)
+    buf[7] = 0xff; // hop limit: 255
+
+    // src: fe80::/64 + IID
+    buf[8] = 0xfe;
+    buf[9] = 0x80;
+    std::memcpy(buf + 16, iid, 8);
+
+    // dst: ff02::2
+    buf[24] = 0xff;
+    buf[25] = 0x02;
+    buf[39] = 0x02;
+
+    // ICMPv6 Router Solicitation
+    buf[40] = 133; // type: ND_ROUTER_SOLICIT
+    buf[41] = 0;   // code
+    // checksum (42-43) computed below
+    // reserved (44-47) left 0
+
+    // ICMPv6 checksum with pseudo-header.
+    uint8_t pseudo[40 + 8] = {0};
+    // src
+    std::memcpy(pseudo + 0, buf + 8, 16);
+    // dst
+    std::memcpy(pseudo + 16, buf + 24, 16);
+    // length (32-bit)
+    pseudo[32] = 0x00;
+    pseudo[33] = 0x00;
+    pseudo[34] = 0x00;
+    pseudo[35] = 0x08;
+    // next header
+    pseudo[39] = 0x3a;
+    // icmpv6 payload
+    std::memcpy(pseudo + 40, buf + 40, 8);
+
+    uint16_t csum = OnesComplementChecksum(pseudo, sizeof(pseudo));
+    buf[42] = static_cast<uint8_t>((csum >> 8) & 0xFF);
+    buf[43] = static_cast<uint8_t>(csum & 0xFF);
+
+    return OctetString::FromArray(buf, sizeof(buf));
+}
 
 UeAppTask::UeAppTask(TaskBase *base) : m_base{base}
 {
@@ -110,6 +195,14 @@ void UeAppTask::onLoop()
         {
             m_logger->info("UE device is switching off");
             m_base->ueController->performSwitchOff(m_base->ue);
+            break;
+        }
+        if (w.timerId >= IPV6_RS_TIMER_BASE && w.timerId < IPV6_RS_TIMER_BASE + 16)
+        {
+            int psi = w.timerId - IPV6_RS_TIMER_BASE;
+            m_ipv6RsTimerArmed[psi] = false;
+            trySendIpv6RouterSolicitation(psi);
+            break;
         }
         break;
     }
@@ -137,6 +230,9 @@ void UeAppTask::receiveStatusUpdate(NmUeStatusUpdate &msg)
             delete m_tunTasks[msg.psi];
             m_tunTasks[msg.psi] = nullptr;
         }
+        m_ipv6RsInjected[msg.psi] = false;
+        m_ipv6RsTimerArmed[msg.psi] = false;
+        m_ipv6RsAttemptsRemaining[msg.psi] = 0;
 
         return;
     }
@@ -144,6 +240,17 @@ void UeAppTask::receiveStatusUpdate(NmUeStatusUpdate &msg)
     if (msg.what == NmUeStatusUpdate::CM_STATE)
     {
         m_cmState = msg.cmState;
+        if (m_cmState == ECmState::CM_CONNECTED)
+        {
+            for (int psi = 1; psi <= 15; ++psi)
+            {
+                if (m_ipv6RsInjected[psi])
+                    continue;
+                if (m_ipv6RsAttemptsRemaining[psi] == 0)
+                    continue;
+                scheduleIpv6RouterSolicitation(psi, 0);
+            }
+        }
         return;
     }
 }
@@ -373,6 +480,47 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
     m_tunTasks[psi] = task;
     task->start();
 
+    // Trigger SLAAC/RA for IPv6-capable sessions (Open5GS sends IID in NAS and expects RS to trigger RA).
+    if (!m_ipv6RsInjected[psi] &&
+        (sessionType == nas::EPduSessionType::IPV6 || sessionType == nas::EPduSessionType::IPV4V6))
+    {
+        uint8_t iid[8] = {0};
+        bool hasIid = false;
+
+        if (sessionType == nas::EPduSessionType::IPV6)
+        {
+            if (pduAddrInfo.length() == 8)
+            {
+                std::memcpy(iid, pduAddrInfo.data(), 8);
+                hasIid = true;
+            }
+            else if (pduAddrInfo.length() == 16)
+            {
+                std::memcpy(iid, pduAddrInfo.data() + 8, 8);
+                hasIid = true;
+            }
+        }
+        else // IPV4V6
+        {
+            if (pduAddrInfo.length() == 12)
+            {
+                std::memcpy(iid, pduAddrInfo.data() + 4, 8);
+                hasIid = true;
+            }
+            else if (pduAddrInfo.length() == 20)
+            {
+                std::memcpy(iid, pduAddrInfo.data() + 12, 8);
+                hasIid = true;
+            }
+        }
+
+        if (hasIid)
+            startIpv6RouterSolicitation(psi, iid);
+        else
+            m_logger->debug("Skipping IPv6 RS injection for PSI[%d]. Cannot derive IID from PDU address length[%d].", psi,
+                            static_cast<int>(pduAddrInfo.length()));
+    }
+
     if (sessionType == nas::EPduSessionType::IPV4)
     {
         m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s] is up.",
@@ -405,6 +553,78 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
             m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s, %s] is up.",
                            pduSession->psi, allocatedName.c_str(), ipv4Address.c_str(), ipv6LinkLocal.c_str());
         }
+    }
+}
+
+void UeAppTask::startIpv6RouterSolicitation(int psi, const uint8_t iid[8])
+{
+    if (psi <= 0 || psi > 15)
+        return;
+    if (m_ipv6RsInjected[psi])
+        return;
+
+    std::memcpy(m_ipv6RsIid[psi].data(), iid, 8);
+    int retries = m_base->config->ipv6RsRetryCount.value_or(DEFAULT_IPV6_RS_RETRY_COUNT);
+    if (retries < 0)
+        retries = 0;
+    if (retries > 20)
+        retries = 20;
+    m_ipv6RsAttemptsRemaining[psi] = static_cast<uint8_t>(1 + retries);
+
+    scheduleIpv6RouterSolicitation(psi, 0);
+}
+
+void UeAppTask::scheduleIpv6RouterSolicitation(int psi, int delayMs)
+{
+    if (psi <= 0 || psi > 15)
+        return;
+    if (m_ipv6RsInjected[psi])
+        return;
+    if (m_ipv6RsTimerArmed[psi])
+        return;
+
+    setTimer(IPV6_RS_TIMER_BASE + psi, delayMs);
+    m_ipv6RsTimerArmed[psi] = true;
+}
+
+void UeAppTask::trySendIpv6RouterSolicitation(int psi)
+{
+    if (psi <= 0 || psi > 15)
+        return;
+    if (m_ipv6RsInjected[psi])
+        return;
+
+    if (m_ipv6RsAttemptsRemaining[psi] == 0)
+    {
+        m_ipv6RsInjected[psi] = true;
+        return;
+    }
+
+    // NAS will drop uplink PDUs when CM is not connected; defer/retry.
+    if (m_cmState != ECmState::CM_CONNECTED)
+    {
+        int delayMs = m_base->config->ipv6RsRetryPeriodMs.value_or(DEFAULT_IPV6_RS_RETRY_PERIOD_MS);
+        scheduleIpv6RouterSolicitation(psi, delayMs);
+        return;
+    }
+
+    auto rs = BuildIpv6RouterSolicitation(m_ipv6RsIid[psi].data());
+
+    auto m = std::make_unique<NmUeAppToNas>(NmUeAppToNas::UPLINK_DATA_DELIVERY);
+    m->psi = psi;
+    m->data = std::move(rs);
+
+    m_logger->debug("Injecting IPv6 Router Solicitation on PSI[%d] to trigger RA/SLAAC. Remaining[%u].", psi,
+                    static_cast<unsigned>(m_ipv6RsAttemptsRemaining[psi]));
+    m_base->nasTask->push(std::move(m));
+
+    m_ipv6RsAttemptsRemaining[psi]--;
+    if (m_ipv6RsAttemptsRemaining[psi] == 0)
+        m_ipv6RsInjected[psi] = true;
+    else
+    {
+        int delayMs = m_base->config->ipv6RsRetryPeriodMs.value_or(DEFAULT_IPV6_RS_RETRY_PERIOD_MS);
+        scheduleIpv6RouterSolicitation(psi, delayMs);
     }
 }
 

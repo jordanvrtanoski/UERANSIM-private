@@ -167,6 +167,15 @@ static void TunSetIpAndUp(const char *ifName, const char *ipAddr, const char *ne
 
 static void TunSetIpv6AndUp(const std::string &ifName, const std::string &ipv6Addr, int ipv6Prefix, int mtu)
 {
+    // Prevent the kernel from auto-generating its own link-local address for this interface.
+    // Open5GS validates the IPv6 link-local Interface Identifier (IID) against the NAS-provided IID; if the host uses a
+    // different auto-generated fe80::, Router Solicitations may be dropped as spoofing.
+    ExecBestEffort("sysctl -q -w net.ipv6.conf." + ifName + ".disable_ipv6=0");
+    ExecBestEffort("sysctl -q -w net.ipv6.conf." + ifName + ".addr_gen_mode=1");
+
+    // Ensure there is no competing link-local address (new TUN interfaces often get an automatic fe80:: address on UP).
+    ExecBestEffort("ip -6 addr flush dev " + ifName + " scope link");
+
     // Idempotent: delete the same addr if it already exists.
     ExecBestEffort("ip -6 addr del " + ipv6Addr + "/" + std::to_string(ipv6Prefix) + " dev " + ifName);
 
@@ -175,165 +184,59 @@ static void TunSetIpv6AndUp(const std::string &ifName, const std::string &ipv6Ad
     ExecStrict("ip link set dev " + ifName + " up");
 }
 
-static void ConfigureRtTables(const std::string &table_name)
+static std::string VrfNameForInterface(const std::string &ifName)
 {
-    std::ifstream ifs;
-    ifs.open("/etc/iproute2/rt_tables");
-    if (!ifs.is_open() || !ifs.good())
-        throw LibError("Could not open '/etc/iproute2/rt_tables'");
-
-    std::string line;
-
-    bool found = false;
-    std::set<int> nums;
-
-    while (std::getline(ifs, line))
-    {
-        auto pos = line.find('#');
-        if (pos != std::string::npos)
-            line = line.substr(0, pos);
-        if (line.length() == 0)
-            continue;
-
-        std::stringstream ss;
-        ss << line;
-
-        int num;
-        ss >> num >> line;
-
-        nums.insert(num);
-
-        if (line == table_name)
-            found = true;
-    }
-
-    ifs.close();
-
-    if (!found)
-    {
-        int availableId = 1000;
-        while (nums.count(availableId))
-            availableId++;
-
-        std::ofstream ofs;
-
-        ofs.open("/etc/iproute2/rt_tables", std::ios_base::app);
-        if (!ofs.is_open() || !ofs.good())
-            throw LibError("Could not open '/etc/iproute2/rt_tables'");
-
-        ofs << "\n" << availableId << "\t" << table_name << std::endl;
-        ofs.close();
-    }
+    // Keep within IFNAMSIZ (16 including NUL). UE tun names are <= 12 by config validation, so "vrf" + ifName fits.
+    std::string vrf = "vrf" + ifName;
+    if (vrf.size() >= IFNAMSIZ)
+        vrf.resize(IFNAMSIZ - 1);
+    return vrf;
 }
 
-static void RemoveExistingIpRules(const std::string &ip_addr)
+static int VrfTableForInterface(const std::string &ifName)
 {
-    std::string list_command = "ip rule list from " + ip_addr;
-    std::string output = ExecStrict(list_command);
+    // Derive a stable per-interface routing table ID without touching /etc/iproute2/rt_tables.
+    unsigned ifIndex = if_nametoindex(ifName.c_str());
+    if (ifIndex == 0)
+        throw LibError("if_nametoindex() failed for " + ifName, errno);
 
-    std::stringstream ss;
-    ss << output;
+    // Pick a high range to avoid clashing with typical system tables.
+    return 10000 + static_cast<int>(ifIndex);
+}
 
-    std::vector<std::string> lines;
-    std::vector<std::string> will_remove;
+static void EnsureVrfAttached(const std::string &ifName, int tableId)
+{
+    std::string vrfName = VrfNameForInterface(ifName);
 
-    std::string s;
-    while (std::getline(ss, s))
-        lines.push_back(s);
-
-    for (auto &line : lines)
+    bool needCreate = true;
     {
-        int num = 0;
-        char from_ip[512] = {0};
-        char table_name[512] = {0};
-
-        if (sscanf(line.c_str(), "%d: from %s lookup %s", &num, from_ip, table_name) != 3)
-            throw LibError("ip rule list lookup command could not parsed");
-
-        if (!strcmp(from_ip, ip_addr.c_str()))
+        std::string output;
+        int rc = ExecOutput(("ip -d link show dev " + vrfName).c_str(), output);
+        if (rc == 0)
         {
-            std::stringstream rule;
-            rule << "from " << from_ip << " lookup " << table_name;
-            will_remove.push_back(rule.str());
+            int existingTable = -1;
+            auto pos = output.find("table ");
+            if (pos != std::string::npos && sscanf(output.c_str() + pos + 6, "%d", &existingTable) == 1 &&
+                existingTable == tableId)
+            {
+                needCreate = false;
+            }
+            else
+            {
+                // Leftover VRF from a previous run with a different table ID. Detach and recreate.
+                ExecBestEffort("ip link set dev " + ifName + " nomaster");
+                ExecBestEffort("ip link del " + vrfName);
+            }
         }
     }
 
-    for (auto &line : will_remove)
-        ExecStrict("ip rule del " + line);
-}
+    if (needCreate)
+        ExecStrict("ip link add " + vrfName + " type vrf table " + std::to_string(tableId));
 
-static void AddNewIpRules(const std::string &ip_addr, const std::string &table_name)
-{
-    std::stringstream cmd;
-    cmd << "ip rule add from " << ip_addr << " table " << table_name;
-    ExecStrict(cmd.str());
-}
+    ExecBestEffort("ip link set dev " + vrfName + " up");
 
-static bool IsFibTableExists(const std::string &table_name)
-{
-    std::string output = ExecStrict("ip route show table all");
-
-    std::stringstream ss;
-    ss << output;
-
-    std::string token;
-    while (ss >> token)
-    {
-        if (token == "table")
-        {
-            ss >> token;
-            if (token == table_name)
-                return true;
-        }
-    }
-
-    return false;
-}
-
-static void RemoveExistingIpRoutes(const std::string &interface_name, const std::string &table_name)
-{
-    if (!IsFibTableExists(table_name))
-        return;
-
-    std::string list_command = "ip route list table " + table_name;
-
-    std::string output = ExecStrict(list_command);
-
-    std::stringstream ss;
-    ss << output;
-
-    std::vector<std::string> lines;
-    std::vector<std::string> will_remove;
-
-    std::string s;
-    while (std::getline(ss, s))
-        lines.push_back(s);
-
-    for (auto &line : lines)
-    {
-        char if_name[IF_NAMESIZE + 8] = {0};
-
-        if (sscanf(line.c_str(), "default dev %s scope link", if_name) != 1)
-            throw LibError("ip route list command could not parsed");
-
-        if (!strcmp(if_name, interface_name.c_str()))
-        {
-            std::stringstream rule;
-            rule << "ip route del default dev " << interface_name << " table " << table_name;
-            will_remove.push_back(rule.str());
-        }
-    }
-
-    for (auto &line : will_remove)
-        ExecStrict(line);
-}
-
-static void AddIpRoutes(const std::string &if_name, const std::string &table_name)
-{
-    std::stringstream cmd;
-    cmd << "ip route add default dev " << if_name << " table " << table_name;
-
-    std::string output = ExecStrict(cmd.str());
+    // Attach the interface to the VRF. This keeps per-UE/PDU routes isolated from the host.
+    ExecStrict("ip link set dev " + ifName + " master " + vrfName);
 }
 
 namespace nr::ue::tun
@@ -382,48 +285,41 @@ void ConfigureTun(const char *tunName, const char *ipAddr, const char *netmask, 
     // acquire the configuration lock
     const std::lock_guard<std::mutex> lock(configMutex);
 
+    int vrfTable = VrfTableForInterface(tunName);
+    EnsureVrfAttached(tunName, vrfTable);
+
     TunSetIpAndUp(tunName, ipAddr, netmask, mtu);
     if (configureRoute)
     {
-        std::string table_name = ROUTING_TABLE_PREFIX + std::string(tunName);
-
-        ConfigureRtTables(table_name);
-        RemoveExistingIpRules(ipAddr);
-        AddNewIpRules(ipAddr, table_name);
-        RemoveExistingIpRoutes(tunName, table_name);
-        AddIpRoutes(tunName, table_name);
+        // Keep default route only inside VRF's table. Traffic uses it when explicitly bound to this interface (e.g.
+        // `ping -I <tun> ...` or SO_BINDTODEVICE), otherwise the host uses its own routing.
+        ExecStrict("ip route replace default dev " + std::string(tunName) + " table " + std::to_string(vrfTable));
     }
 }
 
-	void ConfigureTun6(const char *tunName, const char *ipv6Addr, int ipv6Prefix, int mtu, bool configureRoute)
-	{
-	    // acquire the configuration lock
-	    const std::lock_guard<std::mutex> lock(configMutex);
+void ConfigureTun6(const char *tunName, const char *ipv6Addr, int ipv6Prefix, int mtu, bool configureRoute)
+{
+    // acquire the configuration lock
+    const std::lock_guard<std::mutex> lock(configMutex);
 
-	    TunSetIpv6AndUp(tunName, ipv6Addr, ipv6Prefix, mtu);
+    int vrfTable = VrfTableForInterface(tunName);
+    EnsureVrfAttached(tunName, vrfTable);
 
-	    // Best-effort IPv6 autoconf/RA knobs (needed when the core assigns only an IPv6 interface identifier and relies
-	    // on SLAAC/RA for global prefix and default route).
-	    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".disable_ipv6=0");
-	    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".autoconf=1");
-	    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".accept_ra=2");
-	    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".accept_ra_defrtr=1");
+    TunSetIpv6AndUp(tunName, ipv6Addr, ipv6Prefix, mtu);
 
-	    if (!configureRoute)
-	        return;
+    // IPv6 autoconf/RA knobs. With VRF, any default route learned via RA stays in the VRF table and does not affect the
+    // host's default routing.
+    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".disable_ipv6=0");
+    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".autoconf=1");
+    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".accept_ra=2");
+    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".accept_ra_defrtr=1");
 
-    std::string table_name = ROUTING_TABLE_PREFIX + std::string(tunName);
-    ConfigureRtTables(table_name);
+    if (!configureRoute)
+        return;
 
-    // Prefer /128 to match "from <addr>" semantics.
-    std::string from = std::string(ipv6Addr) + "/128";
-
-    // Make idempotent without relying on parsing `ip -6` output.
-    ExecBestEffort("ip -6 rule del from " + from + " table " + table_name);
-    ExecBestEffort("ip -6 route del default dev " + std::string(tunName) + " table " + table_name);
-
-    ExecStrict("ip -6 rule add from " + from + " table " + table_name);
-    ExecStrict("ip -6 route add default dev " + std::string(tunName) + " table " + table_name);
+    // Do not force an IPv6 default route here: Open5GS uses RS/RA to provide prefix + default router (SLAAC), and we
+    // want the kernel-learned route inside the VRF table.
+    ExecBestEffort("ip -6 route del default table " + std::to_string(vrfTable));
 }
 
 } // namespace nr::ue::tun

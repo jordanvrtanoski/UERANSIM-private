@@ -166,6 +166,10 @@ static nr::ue::UeConfig *ReadConfigYaml()
         result->tunNetmask = yaml::GetString(config, "tunNetmask", 9, 15);
     if (yaml::HasField(config, "tunIpv6Prefix"))
         result->tunIpv6Prefix = yaml::GetInt32(config, "tunIpv6Prefix", 0, 128);
+    if (yaml::HasField(config, "ipv6RsRetryCount"))
+        result->ipv6RsRetryCount = yaml::GetInt32(config, "ipv6RsRetryCount", 0, 20);
+    if (yaml::HasField(config, "ipv6RsRetryPeriodMs"))
+        result->ipv6RsRetryPeriodMs = yaml::GetInt32(config, "ipv6RsRetryPeriodMs", 100, 60000);
 
     yaml::AssertHasField(config, "integrity");
     yaml::AssertHasField(config, "ciphering");
@@ -366,6 +370,8 @@ static nr::ue::UeConfig *GetConfigByUe(int ueIndex)
     c->tunName = g_refConfig->tunName;
     c->tunNetmask = g_refConfig->tunNetmask;
     c->tunIpv6Prefix = g_refConfig->tunIpv6Prefix;
+    c->ipv6RsRetryCount = g_refConfig->ipv6RsRetryCount;
+    c->ipv6RsRetryPeriodMs = g_refConfig->ipv6RsRetryPeriodMs;
     c->hplmn = g_refConfig->hplmn;
     c->configuredNssai = g_refConfig->configuredNssai;
     c->defaultConfiguredNssai = g_refConfig->defaultConfiguredNssai;
