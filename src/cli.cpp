@@ -240,10 +240,16 @@ static void InitReadlineOnce()
         return;
 
     // Ensure Readline internal state (keymaps/terminal) is initialized before binding keys.
-    rl_readline_name = const_cast<char *>("nr-cli");
+    static char rlName[] = "nr-cli";
+    rl_readline_name = rlName;
     (void)rl_initialize();
 
-    auto bind = [](const char *s) { rl_parse_and_bind(const_cast<char *>(s)); };
+    auto bind = [](const char *s) {
+        // readline's rl_parse_and_bind() takes a mutable char* and may modify the buffer while parsing.
+        // Passing a string literal can segfault.
+        std::string tmp{s};
+        rl_parse_and_bind(tmp.data());
+    };
 
     // Make arrow keys work reliably even when terminfo/inputrc is missing or incomplete.
     // Bind both CSI (ESC [ A) and SS3 (ESC O A) variants used by different terminals.
