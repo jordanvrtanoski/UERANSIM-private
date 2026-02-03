@@ -86,7 +86,7 @@ static std::optional<opt::OptionsResult> ParseCliCommandCommon(OrderedMap<std::s
 
     subCmd = tokens[0];
 
-    if (subCmd == "commands")
+    if (subCmd == "commands" || subCmd == "?")
     {
         output = DumpCommands(cmdEntries);
         return std::nullopt;

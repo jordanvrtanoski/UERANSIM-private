@@ -6,6 +6,8 @@ set(CMAKE_C_STANDARD 11)
 
 include_directories(src)
 
+option(UERANSIM_USE_READLINE "Use GNU Readline for nr-cli interactive editing/history when available" ON)
+
 #################### SUB DIRECTORIES ####################
 
 add_subdirectory(src/ext)
@@ -51,3 +53,28 @@ target_link_libraries(nr-cli pthread)
 target_compile_options(nr-cli PRIVATE -Wall -Wextra -pedantic)
 
 target_link_libraries(nr-cli common-lib)
+
+if (UERANSIM_USE_READLINE)
+    find_path(READLINE_INCLUDE_DIR readline/readline.h)
+    find_library(READLINE_LIBRARY readline)
+    find_library(HISTORY_LIBRARY history)
+    find_package(Curses QUIET)
+    find_library(TINFO_LIBRARY tinfo)
+
+    if (READLINE_INCLUDE_DIR AND READLINE_LIBRARY AND HISTORY_LIBRARY)
+        target_include_directories(nr-cli PRIVATE ${READLINE_INCLUDE_DIR})
+        target_link_libraries(nr-cli ${READLINE_LIBRARY})
+        target_link_libraries(nr-cli ${HISTORY_LIBRARY})
+        if (CURSES_FOUND)
+            target_link_libraries(nr-cli ${CURSES_LIBRARIES})
+        elseif (TINFO_LIBRARY)
+            target_link_libraries(nr-cli ${TINFO_LIBRARY})
+        endif()
+        target_compile_definitions(nr-cli PRIVATE UERANSIM_HAVE_READLINE=1)
+    else()
+        message(WARNING "GNU Readline not found (need headers + libreadline + libhistory); nr-cli will use the basic line reader")
+        target_compile_definitions(nr-cli PRIVATE UERANSIM_HAVE_READLINE=0)
+    endif()
+else()
+    target_compile_definitions(nr-cli PRIVATE UERANSIM_HAVE_READLINE=0)
+endif()
