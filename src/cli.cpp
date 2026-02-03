@@ -230,17 +230,23 @@ static std::string GetHistoryPath()
     return path;
 }
 
-static void LoadHistoryBestEffort()
-{
 #if UERANSIM_HAVE_READLINE
+static void InitReadlineOnce()
+{
+    static bool initialized = false;
+    if (initialized)
+        return;
     if (!isatty(STDIN_FILENO))
         return;
+
+    // Ensure Readline internal state (keymaps/terminal) is initialized before binding keys.
+    rl_readline_name = const_cast<char *>("nr-cli");
+    (void)rl_initialize();
 
     auto bind = [](const char *s) { rl_parse_and_bind(const_cast<char *>(s)); };
 
     // Make arrow keys work reliably even when terminfo/inputrc is missing or incomplete.
     // Bind both CSI (ESC [ A) and SS3 (ESC O A) variants used by different terminals.
-    rl_readline_name = const_cast<char *>("nr-cli");
     bind("set enable-keypad on");
     bind("\"\\e[A\": previous-history");
     bind("\"\\e[B\": next-history");
@@ -252,9 +258,19 @@ static void LoadHistoryBestEffort()
     bind("\"\\eOD\": backward-char");
 
     using_history();
+
     std::string p = GetHistoryPath();
     if (!p.empty())
         (void)read_history(p.c_str());
+
+    initialized = true;
+}
+#endif
+
+static void LoadHistoryBestEffort()
+{
+#if UERANSIM_HAVE_READLINE
+    InitReadlineOnce();
 #endif
 }
 
@@ -263,6 +279,7 @@ static void SaveHistoryBestEffort()
 #if UERANSIM_HAVE_READLINE
     if (!isatty(STDIN_FILENO))
         return;
+    InitReadlineOnce();
     std::string p = GetHistoryPath();
     if (!p.empty())
         (void)write_history(p.c_str());
@@ -282,6 +299,8 @@ static bool ReadCommandLine(std::istream &istream, std::ostream &ostream, std::s
     (void)ostream;
 
     isEof = false;
+
+    InitReadlineOnce();
 
     std::string input{};
     const char *prompt = "$ ";
