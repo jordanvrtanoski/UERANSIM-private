@@ -42,6 +42,7 @@ Local run examples:
 - Commit messages in history are short, imperative summaries (often with optional prefixes like `Fix:`) and may reference issues (e.g., `Fixes #766`).
 - PRs should include: problem statement, approach, validation steps (exact commands/configs), and any compatibility notes (config schema, defaults, etc.).
 - Do not include generated artifacts (e.g., `build/`, `cmake-build-release/`) in PRs.
+- Feature-based workflow: never commit on `dev/integrated`; always commit on `feature/*`, then merge into `dev/integrated` (prefer fast-forward when possible).
 
 ## Security & Configuration Tips
 
