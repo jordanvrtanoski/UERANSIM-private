@@ -182,8 +182,9 @@ void GtpTask::handleUplinkData(int ueId, int psi, OctetString &&pdu)
 {
     const uint8_t *data = pdu.data();
 
-    // ignore non IPv4 packets
-    if ((data[0] >> 4 & 0xF) != 4)
+    // Ignore unknown IP versions. Allow IPv4 and IPv6.
+    int ipVersion = (data[0] >> 4) & 0xF;
+    if (ipVersion != 4 && ipVersion != 6)
         return;
 
     uint64_t sessionInd = MakeSessionResInd(ueId, psi);

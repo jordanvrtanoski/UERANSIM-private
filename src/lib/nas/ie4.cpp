@@ -10,6 +10,9 @@
 
 #include <utils/common.hpp>
 
+#include <arpa/inet.h>
+#include <cstring>
+
 namespace nas
 {
 
@@ -1083,8 +1086,76 @@ Json ToJson(const IEPduAddress &v)
     {
     case EPduSessionType::IPV4:
     case EPduSessionType::IPV6:
-    case EPduSessionType::IPV4V6:
         return utils::OctetStringToIp(v.pduAddressInformation);
+    case EPduSessionType::IPV4V6: {
+        // TS 24.501: pduAddressInformation is either IPv4(4)+IPv6(16) or IPv4(4)+IPv6 IID(8).
+        // Implementations differ on the ordering; display best-effort.
+        if (v.pduAddressInformation.length() != 20 && v.pduAddressInformation.length() != 12)
+            return v.pduAddressInformation.toHexString();
+
+        auto ipv4ToString = [](const uint8_t *addr) -> std::optional<std::string> {
+            char buf[INET_ADDRSTRLEN] = {0};
+            if (inet_ntop(AF_INET, addr, buf, sizeof(buf)) == nullptr)
+                return std::nullopt;
+            return std::string{buf};
+        };
+
+        auto ipv6ToString = [](const uint8_t *addr) -> std::optional<std::string> {
+            char buf[INET6_ADDRSTRLEN] = {0};
+            if (inet_ntop(AF_INET6, addr, buf, sizeof(buf)) == nullptr)
+                return std::nullopt;
+            return std::string{buf};
+        };
+
+        auto isZeroV4 = [](const uint8_t *addr) -> bool {
+            return addr[0] == 0 && addr[1] == 0 && addr[2] == 0 && addr[3] == 0;
+        };
+
+        auto llFromIidToString = [&](const uint8_t *iid) -> std::optional<std::string> {
+            in6_addr ll{};
+            ll.s6_addr[0] = 0xfe;
+            ll.s6_addr[1] = 0x80;
+            std::memcpy(ll.s6_addr + 8, iid, 8);
+            return ipv6ToString(ll.s6_addr);
+        };
+
+        const uint8_t *data = v.pduAddressInformation.data();
+
+        if (v.pduAddressInformation.length() == 20)
+        {
+            // Either IPv4(4)+IPv6(16) or IPv6(16)+IPv4(4).
+            const uint8_t *v4 = data;
+            const uint8_t *v6 = data + 4;
+
+            if (isZeroV4(v4) && !isZeroV4(data + 16))
+            {
+                v6 = data;
+                v4 = data + 16;
+            }
+
+            auto v4s = ipv4ToString(v4);
+            auto v6s = ipv6ToString(v6);
+            if (!v4s.has_value() || !v6s.has_value())
+                return v.pduAddressInformation.toHexString();
+            return *v4s + "," + *v6s;
+        }
+
+        // 12 bytes: either IPv4(4)+IPv6 IID(8) or IPv6 IID(8)+IPv4(4). Display IPv6 as link-local.
+        const uint8_t *v4 = data;
+        const uint8_t *iid = data + 4;
+
+        if (isZeroV4(v4) && !isZeroV4(data + 8))
+        {
+            iid = data;
+            v4 = data + 8;
+        }
+
+        auto v4s = ipv4ToString(v4);
+        auto lls = llFromIidToString(iid);
+        if (!v4s.has_value() || !lls.has_value())
+            return v.pduAddressInformation.toHexString();
+        return *v4s + "," + *lls;
+    }
     case EPduSessionType::UNSTRUCTURED:
     case EPduSessionType::ETHERNET:
         return v.pduAddressInformation.toHexString();

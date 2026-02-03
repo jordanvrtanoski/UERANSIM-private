@@ -47,4 +47,20 @@ bool TunConfigure(const std::string &tunName, const std::string &ipAddress, cons
     return true;
 }
 
+bool TunConfigure6(const std::string &tunName, const std::string &ipv6Address, int ipv6Prefix, int mtu, bool configureRouting,
+                   std::string &error)
+{
+    try
+    {
+        tun::ConfigureTun6(tunName.c_str(), ipv6Address.c_str(), ipv6Prefix, mtu, configureRouting);
+    }
+    catch (const LibError &e)
+    {
+        error = e.what();
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace nr::ue::tun
