@@ -20,6 +20,7 @@
 #include <asn/ngap/ASN_NGAP_ProtocolIE-Field.h>
 #include <asn/ngap/ASN_NGAP_RerouteNASRequest.h>
 #include <asn/ngap/ASN_NGAP_UplinkNASTransport.h>
+#include <lib/nas/utils.hpp>
 #include <ue/nas/enc.hpp>
 #include "encode.hpp"
 #include <stdexcept>
@@ -27,47 +28,62 @@
 namespace nr::gnb
 {
 
-int32_t extractSliceInfoAndModifyPdu(OctetString &nasPdu) {
-    nas::RegistrationRequest *regRequest = nullptr;
-    int32_t requestedSliceType = -1;
-    const uint8_t *m_data = nasPdu.data();
-    size_t m_dataLength = nasPdu.length(); 
-    OctetView octetView(m_data, m_dataLength);
-    auto nasMessage = nas::DecodeNasMessage(octetView);  
+struct SliceInfoResult
+{
+    int32_t requestedSliceType{-1};
+    std::optional<NetworkSlice> requestedNssai{};
+    std::optional<nas::EMessageType> messageType{};
+};
+
+static SliceInfoResult ExtractSliceInfoAndModifyPdu(OctetString &nasPdu)
+{
+    SliceInfoResult result{};
+
+    OctetView octetView(nasPdu.data(), nasPdu.length());
+    auto nasMessage = nas::DecodeNasMessage(octetView);
+
     if (nasMessage->epd == nas::EExtendedProtocolDiscriminator::MOBILITY_MANAGEMENT_MESSAGES)
     {
-        nas::MmMessage *mmMessage = dynamic_cast<nas::MmMessage *>(nasMessage.get());
-        if (mmMessage)
+        auto *mmMessage = dynamic_cast<nas::MmMessage *>(nasMessage.get());
+        auto *plainMmMessage = mmMessage ? dynamic_cast<nas::PlainMmMessage *>(mmMessage) : nullptr;
+        if (plainMmMessage)
+            result.messageType = plainMmMessage->messageType;
+        auto *regRequest = plainMmMessage ? dynamic_cast<nas::RegistrationRequest *>(plainMmMessage) : nullptr;
+
+        if (regRequest && regRequest->requestedNSSAI.has_value())
         {
-            nas::PlainMmMessage *plainMmMessage = dynamic_cast<nas::PlainMmMessage *>(mmMessage);
-            if (plainMmMessage)
-            {
-                regRequest = dynamic_cast<nas::RegistrationRequest *>(plainMmMessage);
-                if (regRequest)
-                {
-                    auto sz = regRequest->requestedNSSAI->sNssais.size();
-                    if (sz > 0) {
-                        requestedSliceType = static_cast<uint8_t>(regRequest->requestedNSSAI->sNssais[0].sst);
-                    }
-                }
-            }
+            result.requestedNssai = nas::utils::NssaiTo(*regRequest->requestedNSSAI);
+            if (!result.requestedNssai->slices.empty())
+                result.requestedSliceType = static_cast<int32_t>(result.requestedNssai->slices[0].sst);
+
+            regRequest->requestedNSSAI = std::nullopt;
         }
     }
-    if (regRequest && regRequest->requestedNSSAI) 
-        regRequest->requestedNSSAI = std::nullopt;  
 
     OctetString modifiedNasPdu;
     nas::EncodeNasMessage(*nasMessage, modifiedNasPdu);
     nasPdu = std::move(modifiedNasPdu);
-    return requestedSliceType;
+
+    return result;
 }
 
 void NgapTask::handleInitialNasTransport(int ueId, OctetString &nasPdu, int64_t rrcEstablishmentCause,
                                             const std::optional<GutiMobileIdentity> &sTmsi)
 {
-    int32_t requestedSliceType = extractSliceInfoAndModifyPdu(nasPdu);
+    auto sliceInfo = ExtractSliceInfoAndModifyPdu(nasPdu);
+    int32_t requestedSliceType = sliceInfo.requestedSliceType;
 
-    m_logger->debug("Initial NAS message received from UE[%d]", ueId);
+    if (sliceInfo.messageType.has_value())
+    {
+        m_logger->debug("Initial NAS message received from UE[%d] nasType[%d] requestedSst[%d] hasRequestedNssai[%s]",
+                        ueId, static_cast<int>(*sliceInfo.messageType), requestedSliceType,
+                        sliceInfo.requestedNssai.has_value() ? "yes" : "no");
+    }
+    else
+    {
+        m_logger->debug("Initial NAS message received from UE[%d] requestedSst[%d] hasRequestedNssai[%s]", ueId,
+                        requestedSliceType, sliceInfo.requestedNssai.has_value() ? "yes" : "no");
+    }
 
     if (m_ueCtx.count(ueId))
     {
@@ -75,11 +91,17 @@ void NgapTask::handleInitialNasTransport(int ueId, OctetString &nasPdu, int64_t 
         return;
     }
 
-    createUeContext(ueId, requestedSliceType);
+    createUeContext(ueId, requestedSliceType, std::move(sliceInfo.requestedNssai), sTmsi);
 
     auto *ueCtx = findUeContext(ueId);
     if (ueCtx == nullptr)
         return;
+    if (ueCtx->associatedAmfId < 0)
+    {
+        m_logger->err("Initial NAS transport failure. UE[%d] has no associated AMF after selection.", ueId);
+        return;
+    }
+
     auto *amfCtx = findAmfContext(ueCtx->associatedAmfId);
     if (amfCtx == nullptr)
         return;

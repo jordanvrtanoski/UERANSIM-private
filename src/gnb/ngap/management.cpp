@@ -13,6 +13,37 @@
 namespace nr::gnb
 {
 
+static const char *ToString(EAmfState state)
+{
+    switch (state)
+    {
+    case EAmfState::NOT_CONNECTED:
+        return "NOT_CONNECTED";
+    case EAmfState::WAITING_NG_SETUP:
+        return "WAITING_NG_SETUP";
+    case EAmfState::CONNECTED:
+        return "CONNECTED";
+    }
+    return "UNKNOWN";
+}
+
+static std::string DumpSupportedSsts(const NgapAmfContext &amf)
+{
+    std::string s;
+    bool first = true;
+    for (const auto *plmnSupport : amf.plmnSupportList)
+    {
+        for (const auto &slice : plmnSupport->sliceSupportList.slices)
+        {
+            if (!first)
+                s += ",";
+            first = false;
+            s += std::to_string(static_cast<int>(slice.sst));
+        }
+    }
+    return first ? std::string{"<none>"} : s;
+}
+
 NgapAmfContext *NgapTask::findAmfContext(int ctxId)
 {
     NgapAmfContext *ctx = nullptr;
@@ -33,20 +64,126 @@ void NgapTask::createAmfContext(const GnbAmfConfig &conf)
     m_amfCtx[ctx->ctxId] = ctx;
 }
 
-void NgapTask::createUeContext(int ueId, int32_t &requestedSliceType)
+void NgapTask::createUeContext(int ueId, int32_t &requestedSliceType, std::optional<NetworkSlice> requestedNssai,
+                               const std::optional<GutiMobileIdentity> &sTmsi)
 {
     auto *ctx = new NgapUeContext(ueId);
     ctx->amfUeNgapId = -1;
     ctx->ranUeNgapId = ++m_ueNgapIdCounter;
+    ctx->requestedNssai = std::move(requestedNssai);
 
     m_ueCtx[ctx->ctxId] = ctx;
 
-    // Perform AMF selection
-    auto *amf = selectAmf(ueId, requestedSliceType);
-    if (amf == nullptr)
-        m_logger->err("AMF selection for UE[%d] failed. Could not find a suitable AMF.", ueId);
-    else
-        ctx->associatedAmfId = amf->ctxId;
+    // Perform AMF selection:
+    //  1) requested slice (from RegistrationRequest requestedNSSAI, if available)
+    //  2) gNB default slice (first configured gNB slice) when slice is not available
+    //  3) AMF selection using 5G-S-TMSI (AMF Set ID / AMF Pointer) when available
+    NgapAmfContext *amf = nullptr;
+    if (requestedSliceType >= 0)
+    {
+        amf = selectAmf(ueId, requestedSliceType);
+        if (!amf)
+            m_logger->warn("AMF selection for UE[%d] failed for requested sst[%d]", ueId, requestedSliceType);
+    }
+
+    if (!amf && requestedSliceType < 0 && !m_base->config->nssai.slices.empty())
+    {
+        int32_t defaultSst = static_cast<int32_t>(m_base->config->nssai.slices[0].sst);
+        int32_t tmp = defaultSst;
+        amf = selectAmf(ueId, tmp);
+        if (amf)
+            m_logger->debug("AMF selection for UE[%d] used gNB default sst[%d] (no slice info in NAS)", ueId,
+                            defaultSst);
+        else
+            m_logger->warn("AMF selection for UE[%d] failed for gNB default sst[%d] (no slice info in NAS)", ueId,
+                           defaultSst);
+    }
+
+    if (!amf && sTmsi.has_value())
+    {
+        // Match AMF by served GUAMI (AMF Set ID / AMF Pointer).
+        for (auto &it : m_amfCtx)
+        {
+            auto *cand = it.second;
+            if (!cand || cand->state != EAmfState::CONNECTED)
+                continue;
+            for (const auto *served : cand->servedGuamiList)
+            {
+                if (!served)
+                    continue;
+                if (served->guami.amfSetId == sTmsi->amfSetId && served->guami.amfPointer == sTmsi->amfPointer)
+                {
+                    amf = cand;
+                    break;
+                }
+            }
+            if (amf)
+                break;
+        }
+
+        if (amf)
+        {
+            m_logger->debug("AMF selection for UE[%d] matched 5G-S-TMSI amfSetId[%d] amfPointer[%d] -> AMF[%d]", ueId,
+                            sTmsi->amfSetId, sTmsi->amfPointer, amf->ctxId);
+        }
+        else
+        {
+            m_logger->warn("AMF selection for UE[%d] failed to match 5G-S-TMSI amfSetId[%d] amfPointer[%d]", ueId,
+                           sTmsi->amfSetId, sTmsi->amfPointer);
+        }
+    }
+
+    if (!amf && sTmsi.has_value())
+    {
+        // Final resort: use the AMF that paged this 5G-S-TMSI (if we recently received Paging from it).
+        auto pagingAmfId = findPagingHint(*sTmsi);
+        if (pagingAmfId.has_value())
+        {
+            requestAmfConnectionIfNeeded(*pagingAmfId);
+            auto *cand = findAmfContext(*pagingAmfId);
+            if (cand && cand->state == EAmfState::CONNECTED)
+            {
+                amf = cand;
+                m_logger->debug("AMF selection for UE[%d] used paging AMF[%d] as final resort", ueId, cand->ctxId);
+            }
+            else
+            {
+                m_logger->warn("Paging AMF hint found for UE[%d] -> AMF[%d], but it is not CONNECTED", ueId,
+                               *pagingAmfId);
+            }
+        }
+        else
+        {
+            m_logger->debug("No paging AMF hint found for UE[%d]", ueId);
+        }
+    }
+
+    if (!amf)
+    {
+        std::string snapshot;
+        bool first = true;
+        for (auto &it : m_amfCtx)
+        {
+            if (!it.second)
+                continue;
+            if (!first)
+                snapshot += "; ";
+            first = false;
+            snapshot += "AMF[" + std::to_string(it.second->ctxId) + "] state[" + ToString(it.second->state) + "] ";
+            snapshot += "plmnSupport[" + std::to_string(it.second->plmnSupportList.size()) + "] ";
+            snapshot += "servedGuami[" + std::to_string(it.second->servedGuamiList.size()) + "] ";
+            snapshot += "ssts[" + DumpSupportedSsts(*it.second) + "]";
+        }
+        if (snapshot.empty())
+            snapshot = "<no AMF contexts>";
+
+        m_logger->err("AMF selection for UE[%d] failed. requestedSst[%d] hasRequestedNssai[%s] has5gSTmsi[%s]. %s",
+                      ueId, requestedSliceType, ctx->requestedNssai.has_value() ? "yes" : "no",
+                      sTmsi.has_value() ? "yes" : "no", snapshot.c_str());
+        return;
+    }
+
+    ctx->associatedAmfId = amf->ctxId;
 }
 
 NgapUeContext *NgapTask::findUeContext(int ctxId)
