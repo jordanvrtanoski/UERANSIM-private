@@ -235,6 +235,22 @@ static void LoadHistoryBestEffort()
 #if UERANSIM_HAVE_READLINE
     if (!isatty(STDIN_FILENO))
         return;
+
+    auto bind = [](const char *s) { rl_parse_and_bind(const_cast<char *>(s)); };
+
+    // Make arrow keys work reliably even when terminfo/inputrc is missing or incomplete.
+    // Bind both CSI (ESC [ A) and SS3 (ESC O A) variants used by different terminals.
+    rl_readline_name = const_cast<char *>("nr-cli");
+    bind("set enable-keypad on");
+    bind("\"\\e[A\": previous-history");
+    bind("\"\\e[B\": next-history");
+    bind("\"\\e[C\": forward-char");
+    bind("\"\\e[D\": backward-char");
+    bind("\"\\eOA\": previous-history");
+    bind("\"\\eOB\": next-history");
+    bind("\"\\eOC\": forward-char");
+    bind("\"\\eOD\": backward-char");
+
     using_history();
     std::string p = GetHistoryPath();
     if (!p.empty())
