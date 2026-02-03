@@ -368,7 +368,12 @@ opt::ExpansionResult opt::PerformExpansion(const std::string &command, std::vect
 {
     wordexp_t p = {};
 
-    int ret = wordexp(command.c_str(), &p, WRDE_NOCMD | WRDE_UNDEF);
+    int flags = WRDE_NOCMD | WRDE_UNDEF;
+#ifdef WRDE_NOGLOB
+    // This is a CLI, not a shell: keep wildcard characters literal (e.g., "?", "*") so they can be used as commands.
+    flags |= WRDE_NOGLOB;
+#endif
+    int ret = wordexp(command.c_str(), &p, flags);
     if (ret == 0)
     {
         for (size_t i = 0; i < p.we_wordc; i++)
