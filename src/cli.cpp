@@ -7,12 +7,15 @@
 //
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <unistd.h>
 
 #include <lib/app/cli_base.hpp>
 #include <lib/app/proc_table.hpp>
@@ -21,6 +24,11 @@
 #include <utils/io.hpp>
 #include <utils/network.hpp>
 #include <utils/options.hpp>
+
+#if UERANSIM_HAVE_READLINE
+#include <readline/history.h>
+#include <readline/readline.h>
+#endif
 
 static struct Options
 {
@@ -209,29 +217,136 @@ static bool HandleMessage(const app::CliMessage &msg, bool isOneShot)
     return false;
 }
 
+static std::string GetHistoryPath()
+{
+    const char *home = std::getenv("HOME");
+    if (!home || !*home)
+        return {};
+
+    std::string path = home;
+    if (!path.empty() && path.back() != '/')
+        path += '/';
+    path += ".ueransim_nrcli_history";
+    return path;
+}
+
+static void LoadHistoryBestEffort()
+{
+#if UERANSIM_HAVE_READLINE
+    if (!isatty(STDIN_FILENO))
+        return;
+    using_history();
+    std::string p = GetHistoryPath();
+    if (!p.empty())
+        (void)read_history(p.c_str());
+#endif
+}
+
+static void SaveHistoryBestEffort()
+{
+#if UERANSIM_HAVE_READLINE
+    if (!isatty(STDIN_FILENO))
+        return;
+    std::string p = GetHistoryPath();
+    if (!p.empty())
+        (void)write_history(p.c_str());
+#endif
+}
+
+static bool ReadCommandLine(std::istream &istream, std::ostream &ostream, std::string &line, bool &isEof)
+{
+#if UERANSIM_HAVE_READLINE
+    if (!isatty(STDIN_FILENO))
+    {
+        std::vector<std::string> tokens{};
+        return opt::ReadLine(istream, ostream, line, tokens, isEof);
+    }
+
+    (void)istream;
+    (void)ostream;
+
+    isEof = false;
+
+    std::string input{};
+    const char *prompt = "$ ";
+
+    while (true)
+    {
+        char *buf = ::readline(prompt);
+        if (buf == nullptr)
+        {
+            isEof = true;
+            return false;
+        }
+
+        std::string ln{buf};
+        std::free(buf);
+
+        input += ln;
+
+        // Keep "?" literal (wordexp treats it as a glob pattern).
+        if (input == "?")
+        {
+            line = input;
+            if (!line.empty())
+                add_history(line.c_str());
+            return true;
+        }
+
+        std::vector<std::string> tokens{};
+        auto exp = opt::PerformExpansion(input, tokens);
+        if (exp == opt::ExpansionResult::SUCCESS)
+        {
+            line = input;
+            if (!line.empty())
+                add_history(line.c_str());
+            return true;
+        }
+
+        if (exp == opt::ExpansionResult::SYNTAX_ERROR)
+        {
+            prompt = "> ";
+            input += "\n";
+            continue;
+        }
+
+        return false;
+    }
+#else
+    std::vector<std::string> tokens{};
+    return opt::ReadLine(istream, ostream, line, tokens, isEof);
+#endif
+}
+
 [[noreturn]] static void SendCommand(uint16_t port)
 {
     app::CliServer server{};
 
     if (g_options.directCmd.empty())
     {
+        LoadHistoryBestEffort();
         while (true)
         {
             std::cout << "\x1b[1m";
             std::cout << std::string(92, '-') << std::endl;
             std::string line{};
             bool isEof{};
-            std::vector<std::string> tokens{};
-            if (!opt::ReadLine(std::cin, std::cout, line, tokens, isEof))
+            if (!ReadCommandLine(std::cin, std::cout, line, isEof))
             {
                 if (isEof)
+                {
+                    SaveHistoryBestEffort();
                     exit(0);
+                }
                 else
                     std::cout << "ERROR: Invalid command" << std::endl;
             }
             std::cout << "\x1b[0m";
             if (line.empty())
                 continue;
+
+            if (line == "?")
+                line = "commands";
 
             server.sendMessage(
                 app::CliMessage::Command(InetAddress{cons::CMD_SERVER_IP, port}, line, g_options.nodeName));
@@ -244,6 +359,9 @@ static bool HandleMessage(const app::CliMessage &msg, bool isOneShot)
     }
     else
     {
+        if (g_options.directCmd == "?")
+            g_options.directCmd = "commands";
+
         server.sendMessage(
             app::CliMessage::Command(InetAddress{cons::CMD_SERVER_IP, port}, g_options.directCmd, g_options.nodeName));
 
