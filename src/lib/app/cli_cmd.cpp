@@ -128,9 +128,12 @@ static opt::OptionsDescription DescForPsEstablish(const std::string &subCommand,
 {
     std::string example1 = "IPv4 --sst 1 --sd 1 --dnn internet";
     std::string example2 = "IPv4 --emergency";
+    std::string example3 = "IPv6 --sst 1 --sd 1 --dnn internet";
+    std::string example4 = "IPv4v6 --sst 1 --sd 1 --dnn internet";
 
     auto res = opt::OptionsDescription{
-        {},  {}, entry.descriptionText, {}, subCommand, {entry.usageText}, {example1, example2}, entry.helpIfEmpty,
+        {},  {}, entry.descriptionText, {}, subCommand, {entry.usageText}, {example1, example2, example3, example4},
+        entry.helpIfEmpty,
         true};
 
     res.items.emplace_back(std::nullopt, "sst", "SST value of the PDU session", "value");
@@ -161,7 +164,7 @@ static OrderedMap<std::string, CmdEntry> g_ueCmdEntries = {
     {"rls-state", {"Show status information about RLS", "", DefaultDesc, false}},
     {"coverage", {"Dump available cells and PLMNs in the coverage", "", DefaultDesc, false}},
     {"ps-establish",
-     {"Trigger a PDU session establishment procedure", "<session-type> [options]", DescForPsEstablish, true}},
+     {"Trigger a PDU session establishment procedure", "<IPv4|IPv6|IPv4v6> [options]", DescForPsEstablish, true}},
     {"ps-list", {"List all PDU sessions", "", DefaultDesc, false}},
     {"ps-release", {"Trigger a PDU session release procedure", "<pdu-session-id>...", DefaultDesc, true}},
     {"ps-release-all", {"Trigger PDU session release procedures for all active sessions", "", DefaultDesc, false}},
@@ -283,14 +286,31 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
     }
     else if (subCmd == "ps-establish")
     {
+        auto normalize = [](std::string s) {
+            for (auto &c : s)
+            {
+                if (c >= 'a' && c <= 'z')
+                    c = static_cast<char>(c - 'a' + 'A');
+            }
+            return s;
+        };
+
         auto cmd = std::make_unique<UeCliCommand>(UeCliCommand::PS_ESTABLISH);
         if (options.positionalCount() == 0)
             CMD_ERR("PDU session type is expected")
         if (options.positionalCount() > 15)
             CMD_ERR("Only one PDU session type is expected")
-        std::string type = options.getPositional(0);
-        if (type != "IPv4" && type != "ipv4" && type != "IPV4" && type != "Ipv4" && type != "IpV4")
-            CMD_ERR("Only IPv4 is supported for now")
+
+        std::string type = normalize(options.getPositional(0));
+        if (type == "IPV4")
+            cmd->psType = nas::EPduSessionType::IPV4;
+        else if (type == "IPV6")
+            cmd->psType = nas::EPduSessionType::IPV6;
+        else if (type == "IPV4V6")
+            cmd->psType = nas::EPduSessionType::IPV4V6;
+        else
+            CMD_ERR("Invalid PDU session type, possible values are: \"IPv4\", \"IPv6\", \"IPv4v6\"")
+
         cmd->isEmergency = options.hasFlag('e', "emergency");
         if (cmd->isEmergency)
         {
