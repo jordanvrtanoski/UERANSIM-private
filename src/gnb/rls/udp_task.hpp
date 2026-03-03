@@ -58,6 +58,9 @@ class RlsUdpTask : public NtsTask
   public:
     void initialize(NtsTask *ctlTask);
     void send(int ueId, const rls::RlsMessage &msg);
+
+    int reserveUeIdForSti(uint64_t sti);
+    uint64_t getStiForUeId(int ueId) const;
 };
 
 } // namespace nr::gnb

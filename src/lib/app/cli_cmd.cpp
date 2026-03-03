@@ -8,6 +8,7 @@
 
 #include "cli_cmd.hpp"
 
+#include <cstdint>
 #include <optional>
 #include <sstream>
 #include <utility>
@@ -115,6 +116,23 @@ static std::optional<opt::OptionsResult> ParseCliCommandCommon(OrderedMap<std::s
     return options;
 }
 
+static bool TryParseInt64Auto(const std::string &s, int64_t &out)
+{
+    try
+    {
+        size_t idx = 0;
+        long long v = std::stoll(s, &idx, 0);
+        if (idx != s.size())
+            return false;
+        out = static_cast<int64_t>(v);
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
 //======================================================================================================
 //                                      IMPLEMENTATION
 //======================================================================================================
@@ -144,6 +162,25 @@ static opt::OptionsDescription DescForPsEstablish(const std::string &subCommand,
     return res;
 }
 
+static opt::OptionsDescription DescForHoStart(const std::string &subCommand, const CmdEntry &entry)
+{
+    auto res = opt::OptionsDescription{{},
+                                       {},
+                                       entry.descriptionText,
+                                       {},
+                                       subCommand,
+                                       {entry.usageText},
+                                       {"1 --target-nci 0x0000000010", "1 --target-name UERANSIM-gnb-999-1-2",
+                                        "1 --target-cell-id 16"},
+                                       entry.helpIfEmpty,
+                                       true};
+
+    res.items.emplace_back(std::nullopt, "target-nci", "Target gNB NCI (hex or decimal)", "nci");
+    res.items.emplace_back(std::nullopt, "target-name", "Target gNB neighbor name", "name");
+    res.items.emplace_back(std::nullopt, "target-cell-id", "Target cell ID (as derived from NCI)", "cell-id");
+    return res;
+}
+
 namespace app
 {
 
@@ -155,6 +192,10 @@ static OrderedMap<std::string, CmdEntry> g_gnbCmdEntries = {
     {"ue-list", {"List all UEs associated with the gNB", "", DefaultDesc, false}},
     {"ue-count", {"Print the total number of UEs connected the this gNB", "", DefaultDesc, false}},
     {"ue-release", {"Request a UE context release for the given UE", "<ue-id>", DefaultDesc, false}},
+    {"ho-start",
+     {"Trigger an N2-based handover (Phase 1: private mobility)", "<ue-id> --target-... <value>", DescForHoStart, true}},
+    {"ho-status", {"Show active handover state (debug)", "", DefaultDesc, false}},
+    {"ho-cancel", {"Cancel an in-progress handover (Phase 1)", "<ue-id>", DefaultDesc, true}},
 };
 
 static OrderedMap<std::string, CmdEntry> g_ueCmdEntries = {
@@ -210,6 +251,67 @@ static std::unique_ptr<GnbCliCommand> GnbCliParseImpl(const std::string &subCmd,
     else if (subCmd == "ue-release")
     {
         auto cmd = std::make_unique<GnbCliCommand>(GnbCliCommand::UE_RELEASE_REQ);
+        if (options.positionalCount() == 0)
+            CMD_ERR("UE ID is expected")
+        if (options.positionalCount() > 1)
+            CMD_ERR("Only one UE ID is expected")
+        cmd->ueId = utils::ParseInt(options.getPositional(0));
+        if (cmd->ueId <= 0)
+            CMD_ERR("Invalid UE ID")
+        return cmd;
+    }
+    else if (subCmd == "ho-start")
+    {
+        auto cmd = std::make_unique<GnbCliCommand>(GnbCliCommand::HO_START);
+        if (options.positionalCount() == 0)
+            CMD_ERR("UE ID is expected")
+        if (options.positionalCount() > 1)
+            CMD_ERR("Only one UE ID is expected")
+        cmd->ueId = utils::ParseInt(options.getPositional(0));
+        if (cmd->ueId <= 0)
+            CMD_ERR("Invalid UE ID")
+
+        auto hasOpt = [&options](const char *name) {
+            return options.hasFlag(std::nullopt, std::optional<std::string>{std::string{name}});
+        };
+        auto getOpt = [&options](const char *name) {
+            return options.getOption(std::nullopt, std::optional<std::string>{std::string{name}});
+        };
+
+        int selectorCount = 0;
+        if (hasOpt("target-nci"))
+        {
+            int64_t tmp = 0;
+            if (!TryParseInt64Auto(getOpt("target-nci"), tmp) || tmp < 0)
+                CMD_ERR("Invalid --target-nci value")
+            cmd->hoTargetNci = tmp;
+            selectorCount++;
+        }
+        if (hasOpt("target-name"))
+        {
+            cmd->hoTargetName = getOpt("target-name");
+            selectorCount++;
+        }
+        if (hasOpt("target-cell-id"))
+        {
+            cmd->hoTargetCellId = utils::ParseInt(getOpt("target-cell-id"));
+            selectorCount++;
+        }
+
+        if (selectorCount == 0)
+            CMD_ERR("Target selector is required: --target-nci, --target-name, or --target-cell-id")
+        if (selectorCount > 1)
+            CMD_ERR("Only one target selector is allowed: --target-nci, --target-name, or --target-cell-id")
+
+        return cmd;
+    }
+    else if (subCmd == "ho-status")
+    {
+        return std::make_unique<GnbCliCommand>(GnbCliCommand::HO_STATUS);
+    }
+    else if (subCmd == "ho-cancel")
+    {
+        auto cmd = std::make_unique<GnbCliCommand>(GnbCliCommand::HO_CANCEL);
         if (options.positionalCount() == 0)
             CMD_ERR("UE ID is expected")
         if (options.positionalCount() > 1)

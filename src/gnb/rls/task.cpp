@@ -9,6 +9,7 @@
 #include "task.hpp"
 
 #include <gnb/gtp/task.hpp>
+#include <gnb/ngap/task.hpp>
 #include <gnb/rrc/task.hpp>
 #include <utils/common.hpp>
 #include <utils/random.hpp>
@@ -26,6 +27,16 @@ GnbRlsTask::GnbRlsTask(TaskBase *base) : m_base{base}
 
     m_udpTask->initialize(m_ctlTask);
     m_ctlTask->initialize(this, m_udpTask);
+}
+
+int GnbRlsTask::reserveUeIdForSti(uint64_t sti)
+{
+    return m_udpTask->reserveUeIdForSti(sti);
+}
+
+uint64_t GnbRlsTask::getStiForUeId(int ueId) const
+{
+    return m_udpTask->getStiForUeId(ueId);
 }
 
 void GnbRlsTask::onStart()
@@ -62,6 +73,13 @@ void GnbRlsTask::onLoop()
             m->psi = w.psi;
             m->pdu = std::move(w.data);
             m_base->gtpTask->push(std::move(m));
+            break;
+        }
+        case NmGnbRlsToRls::UPLINK_PRIVATE: {
+            auto m = std::make_unique<NmGnbRlsToNgap>(NmGnbRlsToNgap::PRIVATE_DATA_RX);
+            m->ueId = w.ueId;
+            m->data = std::move(w.data);
+            m_base->ngapTask->push(std::move(m));
             break;
         }
         case NmGnbRlsToRls::UPLINK_RRC: {
@@ -115,6 +133,24 @@ void GnbRlsTask::onLoop()
             m_ctlTask->push(std::move(m));
             break;
         }
+        }
+        break;
+    }
+    case NtsMessageType::GNB_NGAP_TO_RLS: {
+        auto &w = dynamic_cast<NmGnbNgapToRls &>(*msg);
+        switch (w.present)
+        {
+        case NmGnbNgapToRls::PRIVATE_DATA_TX: {
+            auto m = std::make_unique<NmGnbRlsToRls>(NmGnbRlsToRls::DOWNLINK_DATA);
+            m->ueId = w.ueId;
+            m->psi = 0;
+            m->data = std::move(w.data);
+            m_ctlTask->push(std::move(m));
+            break;
+        }
+        default:
+            m_logger->unhandledNts(*msg);
+            break;
         }
         break;
     }

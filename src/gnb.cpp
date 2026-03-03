@@ -9,6 +9,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <unistd.h>
 
@@ -75,6 +76,69 @@ static nr::gnb::GnbConfig *ReadConfigYaml()
         if (yaml::HasField(nssai, "sd"))
             s.sd = octet3{yaml::GetInt32(nssai, "sd", 0, 0xFFFFFF)};
         result->nssai.slices.push_back(s);
+    }
+
+    if (yaml::HasField(config, "neighbors"))
+    {
+        for (auto &n : yaml::GetSequence(config, "neighbors"))
+        {
+            nr::gnb::GnbNeighborConfig nb{};
+
+            nb.nci = yaml::GetInt64(n, "nci", 0, 0xFFFFFFFFFll);
+            nb.gnbIdLength = yaml::HasField(n, "idLength") ? yaml::GetInt32(n, "idLength", 22, 32) : result->gnbIdLength;
+            nb.tac = yaml::HasField(n, "tac") ? yaml::GetInt32(n, "tac", 0, 0xFFFFFF) : result->tac;
+
+            nb.plmn.mcc = yaml::HasField(n, "mcc") ? yaml::GetInt32(n, "mcc", 1, 999) : result->plmn.mcc;
+            if (yaml::HasField(n, "mcc"))
+                yaml::GetString(n, "mcc", 3, 3);
+            nb.plmn.mnc = yaml::HasField(n, "mnc") ? yaml::GetInt32(n, "mnc", 0, 999) : result->plmn.mnc;
+            if (yaml::HasField(n, "mnc"))
+                nb.plmn.isLongMnc = yaml::GetString(n, "mnc", 2, 3).size() != 2;
+            else
+                nb.plmn.isLongMnc = result->plmn.isLongMnc;
+
+            if (yaml::HasField(n, "name"))
+                nb.name = yaml::GetString(n, "name");
+            else
+                nb.name = "neighbor-" + std::to_string(nb.plmn.mcc) + "-" + std::to_string(nb.plmn.mnc) + "-" +
+                          std::to_string(nb.getGnbId());
+
+            result->neighbors.push_back(std::move(nb));
+        }
+    }
+
+    if (yaml::HasField(config, "ngapTimers"))
+    {
+        auto t = config["ngapTimers"];
+
+        if (t.Type() != YAML::NodeType::Map)
+            throw std::runtime_error("Field 'ngapTimers' must be a map.");
+
+        static const std::unordered_set<std::string> kAllowedKeys = {
+            "TNGRELOCprep",
+            "TNGRELOCoverall",
+            "preparedTtlMs",
+            "unmatchedCompleteTtlMs",
+        };
+
+        for (const auto &kv : t)
+        {
+            auto key = kv.first.as<std::string>();
+            if (!kAllowedKeys.count(key))
+                throw std::runtime_error("Field 'ngapTimers' has unknown key '" + key +
+                                         "'. Allowed keys: TNGRELOCprep, TNGRELOCoverall, preparedTtlMs, "
+                                         "unmatchedCompleteTtlMs.");
+        }
+
+        if (yaml::HasField(t, "TNGRELOCprep"))
+            result->ngapTimers.tngRelocPrepMs = yaml::GetInt32(t, "TNGRELOCprep", 1, 600000);
+        if (yaml::HasField(t, "TNGRELOCoverall"))
+            result->ngapTimers.tngRelocOverallMs = yaml::GetInt32(t, "TNGRELOCoverall", 1, 600000);
+
+        if (yaml::HasField(t, "preparedTtlMs"))
+            result->ngapTimers.preparedTtlMs = yaml::GetInt32(t, "preparedTtlMs", 1, 600000);
+        if (yaml::HasField(t, "unmatchedCompleteTtlMs"))
+            result->ngapTimers.unmatchedCompleteTtlMs = yaml::GetInt32(t, "unmatchedCompleteTtlMs", 1, 600000);
     }
 
     return result;

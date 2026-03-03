@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -63,6 +64,8 @@ class RlsUdpTask : public NtsTask
   public:
     void initialize(NtsTask *ctlTask);
     void send(int cellId, const rls::RlsMessage &msg);
+
+    std::optional<int> findBestCellIdByLinkIp(const std::string &ip) const;
 };
 
 } // namespace nr::ue

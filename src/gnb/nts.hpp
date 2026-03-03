@@ -98,6 +98,7 @@ struct NmGnbRlsToRls : NtsMessage
         DOWNLINK_DATA,
         UPLINK_RRC,
         UPLINK_DATA,
+        UPLINK_PRIVATE,
         RADIO_LINK_FAILURE,
         TRANSMISSION_FAILURE,
     } present;
@@ -137,6 +138,36 @@ struct NmGnbRlsToRls : NtsMessage
     std::vector<rls::PduInfo> pduList;
 
     explicit NmGnbRlsToRls(PR present) : NtsMessage(NtsMessageType::GNB_RLS_TO_RLS), present(present)
+    {
+    }
+};
+
+struct NmGnbRlsToNgap : NtsMessage
+{
+    enum PR
+    {
+        PRIVATE_DATA_RX,
+    } present;
+
+    int ueId{};
+    OctetString data{};
+
+    explicit NmGnbRlsToNgap(PR present) : NtsMessage(NtsMessageType::GNB_RLS_TO_NGAP), present(present)
+    {
+    }
+};
+
+struct NmGnbNgapToRls : NtsMessage
+{
+    enum PR
+    {
+        PRIVATE_DATA_TX,
+    } present;
+
+    int ueId{};
+    OctetString data{};
+
+    explicit NmGnbNgapToRls(PR present) : NtsMessage(NtsMessageType::GNB_NGAP_TO_RLS), present(present)
     {
     }
 };

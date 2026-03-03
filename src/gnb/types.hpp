@@ -301,6 +301,36 @@ struct GnbAmfConfig
     uint16_t port{};
 };
 
+struct GnbNeighborConfig
+{
+    std::string name{};
+    int64_t nci{};     // 36-bit
+    int gnbIdLength{}; // 22..32 bit
+    Plmn plmn{};
+    int tac{};
+
+    [[nodiscard]] inline uint32_t getGnbId() const
+    {
+        return static_cast<uint32_t>((nci & 0xFFFFFFFFFLL) >> (36LL - static_cast<int64_t>(gnbIdLength)));
+    }
+
+    [[nodiscard]] inline int getCellId() const
+    {
+        return static_cast<int>(nci & static_cast<uint64_t>((1 << (36 - gnbIdLength)) - 1));
+    }
+};
+
+struct NgapTimerConfig
+{
+    // 3GPP TS 38.413 timer names (configured in milliseconds)
+    int64_t tngRelocPrepMs{5000};    // TNGRELOCprep
+    int64_t tngRelocOverallMs{15000}; // TNGRELOCoverall
+
+    // Simulator robustness timers (configured in milliseconds)
+    int64_t preparedTtlMs{15000};
+    int64_t unmatchedCompleteTtlMs{5000};
+};
+
 struct GnbConfig
 {
     /* Read from config file */
@@ -310,6 +340,8 @@ struct GnbConfig
     int tac{};
     NetworkSlice nssai{};
     std::vector<GnbAmfConfig> amfConfigs{};
+    std::vector<GnbNeighborConfig> neighbors{};
+    NgapTimerConfig ngapTimers{};
     std::string linkIp{};
     std::string ngapIp{};
     std::string gtpIp{};

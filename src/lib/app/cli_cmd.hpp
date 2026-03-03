@@ -10,6 +10,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,9 @@ struct GnbCliCommand
         UE_LIST,
         UE_COUNT,
         UE_RELEASE_REQ,
+        HO_START,
+        HO_STATUS,
+        HO_CANCEL,
     } present;
 
     // AMF_INFO
@@ -37,6 +41,11 @@ struct GnbCliCommand
 
     // UE_RELEASE_REQ
     int ueId{};
+
+    // HO_START
+    std::optional<int64_t> hoTargetNci{};
+    std::optional<std::string> hoTargetName{};
+    std::optional<int> hoTargetCellId{};
 
     explicit GnbCliCommand(PR present) : present(present)
     {

@@ -43,6 +43,9 @@ class GnbRlsTask : public NtsTask
     explicit GnbRlsTask(TaskBase *base);
     ~GnbRlsTask() override = default;
 
+    int reserveUeIdForSti(uint64_t sti);
+    uint64_t getStiForUeId(int ueId) const;
+
   protected:
     void onStart() override;
     void onLoop() override;

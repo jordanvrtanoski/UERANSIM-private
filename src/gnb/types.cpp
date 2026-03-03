@@ -27,6 +27,13 @@ Json ToJson(const GnbConfig &v)
         {"plmn", ToJson(v.plmn)},
         {"tac", v.tac},
         {"nssai", ToJson(v.nssai)},
+        {"ngap-timers",
+         Json::Obj({
+             {"TNGRELOCprep", v.ngapTimers.tngRelocPrepMs},
+             {"TNGRELOCoverall", v.ngapTimers.tngRelocOverallMs},
+             {"preparedTtlMs", v.ngapTimers.preparedTtlMs},
+             {"unmatchedCompleteTtlMs", v.ngapTimers.unmatchedCompleteTtlMs},
+         })},
         {"ngap-ip", v.ngapIp},
         {"gtp-ip", v.gtpIp},
         {"paging-drx", ToJson(v.pagingDrx)},

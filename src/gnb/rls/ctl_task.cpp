@@ -11,6 +11,8 @@
 #include <stdexcept>
 #include <utils/common.hpp>
 
+#include <lib/rls/ho_phase1.hpp>
+
 static constexpr const size_t MAX_PDU_COUNT = 4096;
 static constexpr const int MAX_PDU_TTL = 3000;
 
@@ -128,11 +130,30 @@ void RlsControlTask::handleRlsMessage(int ueId, rls::RlsMessage &msg)
 
         if (m.pduType == rls::EPduType::DATA)
         {
-            auto w = std::make_unique<NmGnbRlsToRls>(NmGnbRlsToRls::UPLINK_DATA);
-            w->ueId = ueId;
-            w->psi = static_cast<int>(m.payload);
-            w->data = std::move(m.pdu);
-            m_mainTask->push(std::move(w));
+            if (rls::ho1::LooksLikeHo1(m.pdu))
+            {
+                auto decoded = rls::ho1::Decode(m.pdu);
+                if (decoded.ok)
+                {
+                    auto w = std::make_unique<NmGnbRlsToRls>(NmGnbRlsToRls::UPLINK_PRIVATE);
+                    w->ueId = ueId;
+                    w->data = std::move(m.pdu);
+                    m_mainTask->push(std::move(w));
+                }
+                else
+                {
+                    m_logger->debug("handover ho.role=target ho.private.event=rx_drop ho.private.drop_reason=%d",
+                                    static_cast<int>(decoded.reason));
+                }
+            }
+            else
+            {
+                auto w = std::make_unique<NmGnbRlsToRls>(NmGnbRlsToRls::UPLINK_DATA);
+                w->ueId = ueId;
+                w->psi = static_cast<int>(m.payload);
+                w->data = std::move(m.pdu);
+                m_mainTask->push(std::move(w));
+            }
         }
         else if (m.pduType == rls::EPduType::RRC)
         {

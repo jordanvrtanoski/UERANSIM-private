@@ -41,6 +41,10 @@ void NgapTask::onStart()
         msg->associatedTask = this;
         m_base->sctpTask->push(std::move(msg));
     }
+
+    static constexpr const int TIMER_ID_HO_HOUSEKEEPING = 100;
+    static constexpr const int TIMER_PERIOD_HO_HOUSEKEEPING = 500;
+    setTimer(TIMER_ID_HO_HOUSEKEEPING, TIMER_PERIOD_HO_HOUSEKEEPING);
 }
 
 void NgapTask::onLoop()
@@ -51,6 +55,31 @@ void NgapTask::onLoop()
 
     switch (msg->msgType)
     {
+    case NtsMessageType::TIMER_EXPIRED: {
+        auto &w = dynamic_cast<NmTimerExpired &>(*msg);
+        static constexpr const int TIMER_ID_HO_HOUSEKEEPING = 100;
+        static constexpr const int TIMER_PERIOD_HO_HOUSEKEEPING = 500;
+        if (w.timerId == TIMER_ID_HO_HOUSEKEEPING)
+        {
+            setTimer(TIMER_ID_HO_HOUSEKEEPING, TIMER_PERIOD_HO_HOUSEKEEPING);
+            hoHousekeeping(utils::CurrentTimeMillis());
+        }
+        break;
+    }
+    case NtsMessageType::GNB_RLS_TO_NGAP: {
+        auto &w = dynamic_cast<NmGnbRlsToNgap &>(*msg);
+        switch (w.present)
+        {
+        case NmGnbRlsToNgap::PRIVATE_DATA_RX: {
+            handlePrivateMobilityRx(w.ueId, std::move(w.data));
+            break;
+        }
+        default:
+            m_logger->unhandledNts(*msg);
+            break;
+        }
+        break;
+    }
     case NtsMessageType::GNB_RRC_TO_NGAP: {
         auto &w = dynamic_cast<NmGnbRrcToNgap &>(*msg);
         switch (w.present)

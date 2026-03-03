@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <set>
 
 #include <ue/nts.hpp>
@@ -170,6 +171,30 @@ void RlsUdpTask::heartbeatCycle(uint64_t time, const Vector3 &simPos)
 void RlsUdpTask::initialize(NtsTask *ctlTask)
 {
     m_ctlTask = ctlTask;
+}
+
+std::optional<int> RlsUdpTask::findBestCellIdByLinkIp(const std::string &ip) const
+{
+    InetAddress needle{ip, cons::RadioLinkPort};
+
+    int bestDbm = INT32_MIN;
+    std::optional<int> best{};
+
+    for (const auto &it : m_cells)
+    {
+        const auto &cell = it.second;
+        if (cell.address.getSockLen() != needle.getSockLen())
+            continue;
+        if (std::memcmp(cell.address.getSockAddr(), needle.getSockAddr(), needle.getSockLen()) != 0)
+            continue;
+        if (!best.has_value() || cell.dbm >= bestDbm)
+        {
+            bestDbm = cell.dbm;
+            best = cell.cellId;
+        }
+    }
+
+    return best;
 }
 
 } // namespace nr::ue

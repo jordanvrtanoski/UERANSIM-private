@@ -10,6 +10,8 @@
 
 #include <utils/common.hpp>
 
+#include <lib/rls/ho_phase1.hpp>
+
 static constexpr const size_t MAX_PDU_COUNT = 128;
 static constexpr const int MAX_PDU_TTL = 3000;
 
@@ -113,6 +115,68 @@ void RlsControlTask::handleRlsMessage(int cellId, rls::RlsMessage &msg)
 
         if (m.pduType == rls::EPduType::DATA)
         {
+            if (rls::ho1::LooksLikeHo1(m.pdu))
+            {
+                auto decoded = rls::ho1::Decode(m.pdu);
+                if (!decoded.ok)
+                {
+                    m_logger->debug("handover ho.role=ue ho.private.event=rx_drop ho.private.drop_reason=%d",
+                                    static_cast<int>(decoded.reason));
+                    return;
+                }
+
+                if (decoded.message.msgType != rls::ho1::MsgType::HO_CMD)
+                {
+                    m_logger->debug("handover ho.role=ue ho.private.event=rx_drop ho.private.drop_reason=unknown_type");
+                    return;
+                }
+
+                if (cellId != m_servingCell)
+                {
+                    m_logger->debug("handover ho.role=ue ho.private.event=rx_drop ho.private.drop_reason=non_serving_cell");
+                    return;
+                }
+
+                auto token = rls::ho1::FindTlvBytes(decoded.message, rls::ho1::tlv::token);
+                auto targetLinkIp = rls::ho1::FindTlvUtf8(decoded.message, rls::ho1::tlv::target_link_ip);
+
+                if (!token.has_value() || !targetLinkIp.has_value())
+                {
+                    m_logger->debug("handover ho.role=ue ho.private.event=fail_rx ho.private.drop_reason=missing_fields");
+                    return;
+                }
+
+                // Phase-1: use link-ip hint to select target cell, then switch serving cell.
+                auto bestCell = m_udpTask->findBestCellIdByLinkIp(*targetLinkIp);
+                int targetCellId = bestCell.value_or(0);
+
+                if (targetCellId == 0)
+                {
+                    m_logger->debug("handover ho.role=ue ho.private.event=fail_rx ho.private.drop_reason=target_not_found");
+                    return;
+                }
+
+                m_logger->info("handover ho.role=ue ho.private.event=cmd_rx ho.token=%s ho.target.cell_id=%d ho.target.link_ip=%s",
+                               token->toHexString().c_str(), targetCellId, targetLinkIp->c_str());
+
+                m_servingCell = targetCellId;
+
+                // Send HO_COMPLETE to target after switching serving cell
+                rls::ho1::Message complete{};
+                complete.msgType = rls::ho1::MsgType::HO_COMPLETE;
+                complete.tlvs.push_back(rls::ho1::Tlv{rls::ho1::tlv::token, token->copy()});
+
+                rls::RlsPduTransmission hoMsg{m_shCtx->sti};
+                hoMsg.pduType = rls::EPduType::DATA;
+                hoMsg.pdu = rls::ho1::Encode(complete);
+                hoMsg.payload = 0;
+                hoMsg.pduId = 0;
+
+                m_udpTask->send(m_servingCell, hoMsg);
+                m_logger->info("handover ho.role=ue ho.private.event=complete_tx ho.token=%s", token->toHexString().c_str());
+                return;
+            }
+
             if (cellId != m_servingCell)
             {
                 // NOTE: Data packet may be received from a cell other than serving cell

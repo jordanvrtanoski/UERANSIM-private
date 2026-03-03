@@ -104,6 +104,7 @@ void RlsUdpTask::receiveRlsPdu(const InetAddress &addr, std::unique_ptr<rls::Rls
         if (m_stiToUe.count(msg->sti))
         {
             int ueId = m_stiToUe[msg->sti];
+            m_ueMap[ueId].sti = msg->sti;
             m_ueMap[ueId].address = addr;
             m_ueMap[ueId].lastSeen = utils::CurrentTimeMillis();
         }
@@ -112,6 +113,7 @@ void RlsUdpTask::receiveRlsPdu(const InetAddress &addr, std::unique_ptr<rls::Rls
             int ueId = ++m_newIdCounter;
 
             m_stiToUe[msg->sti] = ueId;
+            m_ueMap[ueId].sti = msg->sti;
             m_ueMap[ueId].address = addr;
             m_ueMap[ueId].lastSeen = utils::CurrentTimeMillis();
 
@@ -196,6 +198,25 @@ void RlsUdpTask::send(int ueId, const rls::RlsMessage &msg)
     }
 
     sendRlsPdu(m_ueMap[ueId].address, msg);
+}
+
+int RlsUdpTask::reserveUeIdForSti(uint64_t sti)
+{
+    if (m_stiToUe.count(sti))
+        return m_stiToUe[sti];
+
+    int ueId = ++m_newIdCounter;
+    m_stiToUe[sti] = ueId;
+    m_ueMap[ueId].sti = sti;
+    m_ueMap[ueId].lastSeen = 0;
+    return ueId;
+}
+
+uint64_t RlsUdpTask::getStiForUeId(int ueId) const
+{
+    if (!m_ueMap.count(ueId))
+        return 0;
+    return m_ueMap.at(ueId).sti;
 }
 
 } // namespace nr::gnb

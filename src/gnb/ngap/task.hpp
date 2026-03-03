@@ -35,6 +35,14 @@ extern "C"
     struct ASN_NGAP_OverloadStop;
     struct ASN_NGAP_PDUSessionResourceReleaseCommand;
     struct ASN_NGAP_Paging;
+    struct ASN_NGAP_HandoverRequired;
+    struct ASN_NGAP_HandoverRequest;
+    struct ASN_NGAP_HandoverCommand;
+    struct ASN_NGAP_HandoverPreparationFailure;
+    struct ASN_NGAP_HandoverCancelAcknowledge;
+    struct ASN_NGAP_PathSwitchRequestAcknowledge;
+    struct ASN_NGAP_PathSwitchRequestFailure;
+    struct ASN_NGAP_UESecurityCapabilities;
 }
 
 namespace nr::gnb
@@ -90,6 +98,47 @@ class NgapTask : public NtsTask
     std::unordered_map<FiveGSTmsiKey, PagingAmfHint, FiveGSTmsiKeyHash> m_pagingAmfHints;
 
     friend class GnbCmdHandler;
+
+    struct HoPduInfo
+    {
+        int psi{};
+        GtpTunnel downTunnel{};
+        std::vector<uint8_t> qfis{};
+    };
+
+    struct Ho1SourceState
+    {
+        uint32_t token{};
+        int64_t targetNci{};
+        int targetGnbIdLength{};
+        uint32_t targetGnbId{};
+        Plmn targetPlmn{};
+        int targetTac{};
+        std::string targetName{};
+
+        std::optional<std::string> targetLinkIp{};
+        uint64_t ueSti{};
+        int64_t startedAtMs{};
+        bool commandReceived{};
+    };
+
+    struct Ho1TargetState
+    {
+        uint32_t token{};
+        int ueId{};
+        uint64_t ueSti{};
+        std::vector<HoPduInfo> pduInfos{};
+        asn::Unique<ASN_NGAP_UESecurityCapabilities> ueSecurityCapabilities{};
+        int64_t preparedAtMs{};
+        bool completeReceived{};
+        bool pathSwitchSent{};
+    };
+
+    uint32_t m_ho1TokenCounter{};
+    std::unordered_map<int, Ho1SourceState> m_ho1SourceByUe{};
+    std::unordered_map<uint32_t, Ho1TargetState> m_ho1TargetByToken{};
+    std::unordered_map<uint32_t, int64_t> m_ho1UnmatchedCompleteByToken{};
+    std::unordered_map<int, int64_t> m_ho1CancelSentAtMsByUe{};
 
   public:
     explicit NgapTask(TaskBase *base);
@@ -161,6 +210,22 @@ class NgapTask : public NtsTask
     /* Radio resource control */
     void handleRadioLinkFailure(int ueId);
     void receivePaging(int amfId, ASN_NGAP_Paging *msg);
+
+    /* Handover (Phase 1: private mobility) */
+    std::optional<uint32_t> startN2HandoverPhase1(int ueId, const Plmn &targetPlmn, int targetTac, uint32_t targetGnbId,
+                                                  int targetGnbIdLength, int64_t targetNci,
+                                                  const std::string &targetName);
+    void receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_HandoverRequest *msg);
+    void receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg);
+    void receiveHandoverPreparationFailure(int amfId, ASN_NGAP_HandoverPreparationFailure *msg);
+    void receiveHandoverCancelAcknowledge(int amfId, ASN_NGAP_HandoverCancelAcknowledge *msg);
+    void receivePathSwitchRequestAcknowledge(int amfId, ASN_NGAP_PathSwitchRequestAcknowledge *msg);
+    void receivePathSwitchRequestFailure(int amfId, ASN_NGAP_PathSwitchRequestFailure *msg);
+    void handlePrivateMobilityRx(int ueId, OctetString &&payload);
+    void sendHandoverNotify(int ueId);
+    void sendPathSwitchRequest(int ueId, const Ho1TargetState &st);
+    void sendHandoverCancel(int ueId, NgapCause cause);
+    void hoHousekeeping(int64_t nowMs);
 };
 
 } // namespace nr::gnb

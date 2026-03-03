@@ -25,6 +25,12 @@
 #include <asn/ngap/ASN_NGAP_UnsuccessfulOutcome.h>
 #include <asn/ngap/ASN_NGAP_UserLocationInformation.h>
 #include <asn/ngap/ASN_NGAP_UserLocationInformationNR.h>
+#include <asn/ngap/ASN_NGAP_HandoverRequest.h>
+#include <asn/ngap/ASN_NGAP_HandoverCommand.h>
+#include <asn/ngap/ASN_NGAP_HandoverPreparationFailure.h>
+#include <asn/ngap/ASN_NGAP_HandoverCancelAcknowledge.h>
+#include <asn/ngap/ASN_NGAP_PathSwitchRequestAcknowledge.h>
+#include <asn/ngap/ASN_NGAP_PathSwitchRequestFailure.h>
 
 static e_ASN_NGAP_Criticality FindCriticalityOfUserIe(ASN_NGAP_NGAP_PDU *pdu, ASN_NGAP_ProtocolIE_ID_t ieId)
 {
@@ -292,6 +298,9 @@ void NgapTask::handleSctpMessage(int amfId, uint16_t stream, const UniqueBuffer 
         case ASN_NGAP_InitiatingMessage__value_PR_Paging:
             receivePaging(amf->ctxId, &value.choice.Paging);
             break;
+        case ASN_NGAP_InitiatingMessage__value_PR_HandoverRequest:
+            receiveHandoverRequest(amf->ctxId, stream, &value.choice.HandoverRequest);
+            break;
         default:
             m_logger->err("Unhandled NGAP initiating-message received (%d)", value.present);
             break;
@@ -305,6 +314,15 @@ void NgapTask::handleSctpMessage(int amfId, uint16_t stream, const UniqueBuffer 
         case ASN_NGAP_SuccessfulOutcome__value_PR_NGSetupResponse:
             receiveNgSetupResponse(amf->ctxId, &value.choice.NGSetupResponse);
             break;
+        case ASN_NGAP_SuccessfulOutcome__value_PR_HandoverCommand:
+            receiveHandoverCommand(amf->ctxId, &value.choice.HandoverCommand);
+            break;
+        case ASN_NGAP_SuccessfulOutcome__value_PR_HandoverCancelAcknowledge:
+            receiveHandoverCancelAcknowledge(amf->ctxId, &value.choice.HandoverCancelAcknowledge);
+            break;
+        case ASN_NGAP_SuccessfulOutcome__value_PR_PathSwitchRequestAcknowledge:
+            receivePathSwitchRequestAcknowledge(amf->ctxId, &value.choice.PathSwitchRequestAcknowledge);
+            break;
         default:
             m_logger->err("Unhandled NGAP successful-outcome received (%d)", value.present);
             break;
@@ -317,6 +335,12 @@ void NgapTask::handleSctpMessage(int amfId, uint16_t stream, const UniqueBuffer 
         {
         case ASN_NGAP_UnsuccessfulOutcome__value_PR_NGSetupFailure:
             receiveNgSetupFailure(amf->ctxId, &value.choice.NGSetupFailure);
+            break;
+        case ASN_NGAP_UnsuccessfulOutcome__value_PR_HandoverPreparationFailure:
+            receiveHandoverPreparationFailure(amf->ctxId, &value.choice.HandoverPreparationFailure);
+            break;
+        case ASN_NGAP_UnsuccessfulOutcome__value_PR_PathSwitchRequestFailure:
+            receivePathSwitchRequestFailure(amf->ctxId, &value.choice.PathSwitchRequestFailure);
             break;
         default:
             m_logger->err("Unhandled NGAP unsuccessful-outcome received (%d)", value.present);
@@ -392,11 +416,53 @@ bool NgapTask::handleSctpStreamId(int amfId, int stream, const ASN_NGAP_NGAP_PDU
         }
         else
         {
-            if (stream != 0)
+            ptr = asn::ngap::FindProtocolIeInPdu(pdu, asn_DEF_ASN_NGAP_AMF_UE_NGAP_ID,
+                                                 ASN_NGAP_ProtocolIE_ID_id_AMF_UE_NGAP_ID);
+            if (ptr != nullptr)
             {
-                m_logger->err("Received stream number != 0 in non-UE-associated signalling");
-                sendErrorIndication(amfId, NgapCause::Protocol_unspecified);
-                return false;
+                if (stream == 0)
+                {
+                    m_logger->err("Received stream number == 0 in UE-associated signalling");
+                    sendErrorIndication(amfId, NgapCause::Protocol_unspecified);
+                    return false;
+                }
+
+                auto id = asn::GetSigned64(*reinterpret_cast<ASN_NGAP_AMF_UE_NGAP_ID_t *>(ptr));
+                auto *ue = findUeByAmfId(id);
+                if (ue == nullptr)
+                {
+                    // Some UE-associated procedures (e.g., HANDOVER REQUEST) arrive before the target allocates its
+                    // RAN_UE_NGAP_ID and creates a UE context. Allow such messages through.
+                    auto procedureCode = pdu.present == ASN_NGAP_NGAP_PDU_PR_initiatingMessage
+                                             ? pdu.choice.initiatingMessage->procedureCode
+                                             : pdu.present == ASN_NGAP_NGAP_PDU_PR_successfulOutcome
+                                                   ? pdu.choice.successfulOutcome->procedureCode
+                                                   : pdu.choice.unsuccessfulOutcome->procedureCode;
+                    if (procedureCode == ASN_NGAP_ProcedureCode_id_HandoverResourceAllocation)
+                        return true;
+
+                    sendErrorIndication(amfId, NgapCause::RadioNetwork_inconsistent_remote_UE_NGAP_ID);
+                    return false;
+                }
+
+                if (ue->downlinkStream == 0)
+                    ue->downlinkStream = stream;
+                else if (ue->downlinkStream != stream)
+                {
+                    m_logger->err("received stream number is inconsistent. received %d, expected :%d", stream,
+                                  ue->downlinkStream);
+                    sendErrorIndication(amfId, NgapCause::Protocol_unspecified);
+                    return false;
+                }
+            }
+            else
+            {
+                if (stream != 0)
+                {
+                    m_logger->err("Received stream number != 0 in non-UE-associated signalling");
+                    sendErrorIndication(amfId, NgapCause::Protocol_unspecified);
+                    return false;
+                }
             }
         }
     }
