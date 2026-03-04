@@ -45,6 +45,12 @@ static e_ASN_NGAP_Criticality FindCriticalityOfUserIe(ASN_NGAP_NGAP_PDU *pdu, AS
                                                                            : ASN_NGAP_Criticality_ignore;
     }
 
+    if (ieId == ASN_NGAP_ProtocolIE_ID_id_SourceAMF_UE_NGAP_ID)
+    {
+        if (procedureCode == ASN_NGAP_ProcedureCode_id_PathSwitchRequest)
+            return ASN_NGAP_Criticality_reject;
+    }
+
     if (ieId == ASN_NGAP_ProtocolIE_ID_id_RAN_UE_NGAP_ID || ieId == ASN_NGAP_ProtocolIE_ID_id_AMF_UE_NGAP_ID)
     {
         if (procedureCode == ASN_NGAP_ProcedureCode_id_RerouteNASRequest)
@@ -153,22 +159,45 @@ void NgapTask::sendNgapUeAssociated(int ueId, ASN_NGAP_NGAP_PDU *pdu)
         return;
     }
 
+    auto procedureCode =
+        pdu->present == ASN_NGAP_NGAP_PDU_PR_initiatingMessage   ? pdu->choice.initiatingMessage->procedureCode
+        : pdu->present == ASN_NGAP_NGAP_PDU_PR_successfulOutcome ? pdu->choice.successfulOutcome->procedureCode
+                                                                 : pdu->choice.unsuccessfulOutcome->procedureCode;
+    bool isPathSwitch = procedureCode == ASN_NGAP_ProcedureCode_id_PathSwitchRequest;
+    bool skipRanUe = pdu->present == ASN_NGAP_NGAP_PDU_PR_unsuccessfulOutcome &&
+                     procedureCode == ASN_NGAP_ProcedureCode_id_HandoverResourceAllocation;
+
     /* Insert UE-related information elements */
     {
         if (ue->amfUeNgapId > 0)
         {
-            asn::ngap::AddProtocolIeIfUsable(
-                *pdu, asn_DEF_ASN_NGAP_AMF_UE_NGAP_ID, ASN_NGAP_ProtocolIE_ID_id_AMF_UE_NGAP_ID,
-                FindCriticalityOfUserIe(pdu, ASN_NGAP_ProtocolIE_ID_id_AMF_UE_NGAP_ID), [ue](void *mem) {
-                    auto &id = *reinterpret_cast<ASN_NGAP_AMF_UE_NGAP_ID_t *>(mem);
-                    asn::SetSigned64(ue->amfUeNgapId, id);
-                });
+            if (isPathSwitch)
+            {
+                asn::ngap::AddProtocolIeIfUsable(
+                    *pdu, asn_DEF_ASN_NGAP_AMF_UE_NGAP_ID, ASN_NGAP_ProtocolIE_ID_id_SourceAMF_UE_NGAP_ID,
+                    FindCriticalityOfUserIe(pdu, ASN_NGAP_ProtocolIE_ID_id_SourceAMF_UE_NGAP_ID), [ue](void *mem) {
+                        auto &id = *reinterpret_cast<ASN_NGAP_AMF_UE_NGAP_ID_t *>(mem);
+                        asn::SetSigned64(ue->amfUeNgapId, id);
+                    });
+            }
+            else
+            {
+                asn::ngap::AddProtocolIeIfUsable(
+                    *pdu, asn_DEF_ASN_NGAP_AMF_UE_NGAP_ID, ASN_NGAP_ProtocolIE_ID_id_AMF_UE_NGAP_ID,
+                    FindCriticalityOfUserIe(pdu, ASN_NGAP_ProtocolIE_ID_id_AMF_UE_NGAP_ID), [ue](void *mem) {
+                        auto &id = *reinterpret_cast<ASN_NGAP_AMF_UE_NGAP_ID_t *>(mem);
+                        asn::SetSigned64(ue->amfUeNgapId, id);
+                    });
+            }
         }
 
-        asn::ngap::AddProtocolIeIfUsable(
-            *pdu, asn_DEF_ASN_NGAP_RAN_UE_NGAP_ID, ASN_NGAP_ProtocolIE_ID_id_RAN_UE_NGAP_ID,
-            FindCriticalityOfUserIe(pdu, ASN_NGAP_ProtocolIE_ID_id_RAN_UE_NGAP_ID),
-            [ue](void *mem) { *reinterpret_cast<ASN_NGAP_RAN_UE_NGAP_ID_t *>(mem) = ue->ranUeNgapId; });
+        if (!skipRanUe)
+        {
+            asn::ngap::AddProtocolIeIfUsable(
+                *pdu, asn_DEF_ASN_NGAP_RAN_UE_NGAP_ID, ASN_NGAP_ProtocolIE_ID_id_RAN_UE_NGAP_ID,
+                FindCriticalityOfUserIe(pdu, ASN_NGAP_ProtocolIE_ID_id_RAN_UE_NGAP_ID),
+                [ue](void *mem) { *reinterpret_cast<ASN_NGAP_RAN_UE_NGAP_ID_t *>(mem) = ue->ranUeNgapId; });
+        }
 
         asn::ngap::AddProtocolIeIfUsable(
             *pdu, asn_DEF_ASN_NGAP_UserLocationInformation, ASN_NGAP_ProtocolIE_ID_id_UserLocationInformation,

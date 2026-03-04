@@ -242,7 +242,7 @@ std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &ta
 
     auto *iePs = asn::New<ASN_NGAP_HandoverRequiredIEs>();
     iePs->id = ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceListHORqd;
-    iePs->criticality = ASN_NGAP_Criticality_ignore;
+    iePs->criticality = ASN_NGAP_Criticality_reject;
     iePs->value.present = ASN_NGAP_HandoverRequiredIEs__value_PR_PDUSessionResourceListHORqd;
 
     for (int psi : ue->pduSessions)
@@ -909,7 +909,7 @@ void NgapTask::sendPathSwitchRequest(int ueId, const Ho1TargetState &st)
 
     auto *ieCaps = asn::New<ASN_NGAP_PathSwitchRequestIEs>();
     ieCaps->id = ASN_NGAP_ProtocolIE_ID_id_UESecurityCapabilities;
-    ieCaps->criticality = ASN_NGAP_Criticality_reject;
+    ieCaps->criticality = ASN_NGAP_Criticality_ignore;
     ieCaps->value.present = ASN_NGAP_PathSwitchRequestIEs__value_PR_UESecurityCapabilities;
     asn::DeepCopy(asn_DEF_ASN_NGAP_UESecurityCapabilities, *st.ueSecurityCapabilities,
                   &ieCaps->value.choice.UESecurityCapabilities);
