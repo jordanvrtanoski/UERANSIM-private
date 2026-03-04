@@ -21,9 +21,14 @@ Json ToJson(const GnbStatusInfo &v)
 
 Json ToJson(const GnbConfig &v)
 {
+    std::string nciHex = "0x" + utils::IntToHex(static_cast<uint64_t>(v.nci));
     return Json::Obj({
         {"name", v.name},
         {"nci", v.nci},
+        {"nci-hex", nciHex},
+        {"gnb-id", v.getGnbId()},
+        {"gnb-id-length", v.gnbIdLength},
+        {"cell-id", v.getCellId()},
         {"plmn", ToJson(v.plmn)},
         {"tac", v.tac},
         {"nssai", ToJson(v.nssai)},

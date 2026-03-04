@@ -14,6 +14,7 @@
 
 #include <gnb/rls/task.hpp>
 #include <gnb/gtp/task.hpp>
+#include <utils/common.hpp>
 
 #include <lib/rls/ho_phase1.hpp>
 
@@ -78,6 +79,11 @@ static void AddHo1TlvU64(rls::ho1::Message &msg, uint16_t type, uint64_t v)
     msg.tlvs.push_back(rls::ho1::Tlv{type, OctetString::FromOctet8(v)});
 }
 
+static std::string NciToHex(int64_t nci)
+{
+    return "0x" + utils::IntToHex(static_cast<uint64_t>(nci));
+}
+
 std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &targetPlmn, int targetTac,
                                                         uint32_t targetGnbId, int targetGnbIdLength, int64_t targetNci,
                                                         const std::string &targetName)
@@ -119,6 +125,10 @@ std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &ta
     st.commandReceived = false;
 
     m_ho1SourceByUe[ueId] = st;
+    m_logger->debug("handover ho.role=source ho.state=PREP_SENT ho.ue_id=%d ho.token=%u ho.source.nci=%s "
+                    "ho.target.nci=%s ho.target.name=%s",
+                    ueId, token, NciToHex(m_base->config->nci).c_str(), NciToHex(targetNci).c_str(),
+                    targetName.c_str());
 
     rls::ho1::Message container{};
     container.msgType = rls::ho1::MsgType::NGAP_SRC_TO_TGT;
@@ -197,9 +207,10 @@ std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &ta
     asn::SetOctetString(ieContainer->value.choice.SourceToTarget_TransparentContainer, srcToTgt);
     ies.push_back(ieContainer);
 
-    m_logger->info("handover ho.role=source ho.ngap.event=ho_required_tx ho.ue_id=%d ho.token=%u ho.target.name=%s "
-                   "ho.target.gnb_id=%u/%d ho.target.tac=%d",
-                   ueId, token, targetName.c_str(), targetGnbId, targetGnbIdLength, targetTac);
+    m_logger->info("handover ho.role=source ho.ngap.event=ho_required_tx ho.ue_id=%d ho.token=%u ho.source.nci=%s "
+                   "ho.target.name=%s ho.target.nci=%s ho.target.gnb_id=%u/%d ho.target.tac=%d",
+                   ueId, token, NciToHex(m_base->config->nci).c_str(), targetName.c_str(),
+                   NciToHex(targetNci).c_str(), targetGnbId, targetGnbIdLength, targetTac);
 
     auto *pdu = asn::ngap::NewMessagePdu<ASN_NGAP_HandoverRequired>(ies);
     sendNgapUeAssociated(ueId, pdu);
@@ -466,15 +477,18 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     respIes.push_back(ieT2s);
 
     m_ho1TargetByToken[token] = std::move(st);
+    m_logger->debug("handover ho.role=target ho.state=PREPARED ho.ue_id=%d ho.token=%u ho.local.nci=%s",
+                    ueId, token, NciToHex(m_base->config->nci).c_str());
 
     m_logger->info("handover ho.role=target ho.ngap.event=ho_request_rx ho.ue_id=%d ho.token=%u ho.amf_ue_ngap_id=%ld "
-                   "ho.pdu_admitted=%d ho.pdu_failed=%d",
-                   ueId, token, amfUeNgapId, static_cast<int>(admittedList.size()),
-                   static_cast<int>(failedList.size()));
+                   "ho.local.nci=%s ho.pdu_admitted=%d ho.pdu_failed=%d",
+                   ueId, token, amfUeNgapId, NciToHex(m_base->config->nci).c_str(),
+                   static_cast<int>(admittedList.size()), static_cast<int>(failedList.size()));
 
     auto *respPdu = asn::ngap::NewMessagePdu<ASN_NGAP_HandoverRequestAcknowledge>(respIes);
     sendNgapUeAssociated(ueId, respPdu);
-    m_logger->info("handover ho.role=target ho.ngap.event=ho_req_ack_tx ho.ue_id=%d ho.token=%u", ueId, token);
+    m_logger->info("handover ho.role=target ho.ngap.event=ho_req_ack_tx ho.ue_id=%d ho.token=%u ho.local.nci=%s", ueId,
+                   token, NciToHex(m_base->config->nci).c_str());
 
     // If HO_COMPLETE arrived before preparation finished, execute now.
     if (m_ho1UnmatchedCompleteByToken.count(token))
@@ -570,9 +584,12 @@ void NgapTask::receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg)
     m_base->rlsTask->push(std::move(w));
 
     it->second.commandReceived = true;
+    m_logger->debug("handover ho.role=source ho.state=EXECUTING ho.ue_id=%d ho.token=%u", ue->ctxId, token);
 
-    m_logger->info("handover ho.role=source ho.private.event=cmd_tx ho.ue_id=%d ho.token=%u ho.target.link_ip=%s", ue->ctxId,
-                   token, it->second.targetLinkIp->c_str());
+    m_logger->info("handover ho.role=source ho.private.event=cmd_tx ho.ue_id=%d ho.token=%u ho.target.name=%s "
+                   "ho.target.nci=%s ho.target.link_ip=%s",
+                   ue->ctxId, token, it->second.targetName.c_str(), NciToHex(it->second.targetNci).c_str(),
+                   it->second.targetLinkIp->c_str());
 }
 
 void NgapTask::receiveHandoverPreparationFailure(int amfId, ASN_NGAP_HandoverPreparationFailure *msg)
@@ -610,6 +627,7 @@ void NgapTask::receivePathSwitchRequestAcknowledge(int amfId, ASN_NGAP_PathSwitc
         return;
 
     m_logger->info("handover ho.role=target ho.ngap.event=path_switch_ack_rx ho.ue_id=%d", ue->ctxId);
+    m_logger->debug("handover ho.role=target ho.state=SUCCESS ho.ue_id=%d", ue->ctxId);
 
     for (auto it = m_ho1TargetByToken.begin(); it != m_ho1TargetByToken.end(); ++it)
     {
@@ -628,6 +646,7 @@ void NgapTask::receivePathSwitchRequestFailure(int amfId, ASN_NGAP_PathSwitchReq
         return;
 
     m_logger->err("handover ho.role=target ho.ngap.event=path_switch_fail_rx ho.ue_id=%d", ue->ctxId);
+    m_logger->debug("handover ho.role=target ho.state=PATH_SWITCH_FAIL ho.ue_id=%d", ue->ctxId);
 
     for (auto it = m_ho1TargetByToken.begin(); it != m_ho1TargetByToken.end(); ++it)
     {
@@ -673,10 +692,16 @@ void NgapTask::handlePrivateMobilityRx(int ueId, OctetString &&payload)
 
     if (decoded.message.msgType == rls::ho1::MsgType::HO_FAIL)
     {
+        auto reasonCode = rls::ho1::FindTlvU32(decoded.message, rls::ho1::tlv::reason_code);
+        auto reasonDetail = rls::ho1::FindTlvUtf8(decoded.message, rls::ho1::tlv::reason_detail);
+        uint32_t reasonCodeVal = reasonCode.has_value() ? *reasonCode : 0;
+        const char *reasonDetailStr = reasonDetail.has_value() ? reasonDetail->c_str() : "n/a";
+
         if (m_ho1TargetByToken.count(token))
         {
             auto &st = m_ho1TargetByToken.at(token);
-            m_logger->err("handover ho.role=target ho.private.event=fail_rx ho.ue_id=%d ho.token=%u", ueId, token);
+            m_logger->err("handover ho.role=target ho.private.event=fail_rx ho.ue_id=%d ho.token=%u ho.reason_code=%u ho.detail=%s",
+                          ueId, token, reasonCodeVal, reasonDetailStr);
             sendContextRelease(st.ueId, NgapCause::RadioNetwork_ho_failure_in_target_5GC_ngran_node_or_target_system);
             m_ho1TargetByToken.erase(token);
             return;
@@ -684,7 +709,8 @@ void NgapTask::handlePrivateMobilityRx(int ueId, OctetString &&payload)
 
         if (m_ho1SourceByUe.count(ueId) && m_ho1SourceByUe.at(ueId).token == token)
         {
-            m_logger->err("handover ho.role=source ho.private.event=fail_rx ho.ue_id=%d ho.token=%u", ueId, token);
+            m_logger->err("handover ho.role=source ho.private.event=fail_rx ho.ue_id=%d ho.token=%u ho.reason_code=%u ho.detail=%s",
+                          ueId, token, reasonCodeVal, reasonDetailStr);
             sendHandoverCancel(ueId, NgapCause::RadioNetwork_handover_cancelled);
             m_ho1SourceByUe.erase(ueId);
             return;
@@ -720,6 +746,7 @@ void NgapTask::handlePrivateMobilityRx(int ueId, OctetString &&payload)
         m_logger->info("handover ho.role=target ho.private.event=complete_rx ho.ue_id=%d ho.token=%u", ueId, token);
     }
 
+    m_logger->debug("handover ho.role=target ho.state=COMPLETE_RX ho.ue_id=%d ho.token=%u", st.ueId, token);
     sendHandoverNotify(st.ueId);
     st.pathSwitchSent = true;
     sendPathSwitchRequest(st.ueId, st);
@@ -796,6 +823,7 @@ void NgapTask::sendPathSwitchRequest(int ueId, const Ho1TargetState &st)
 
     m_logger->info("handover ho.role=target ho.ngap.event=path_switch_tx ho.ue_id=%d ho.token=%u ho.pdu_count=%d", ueId,
                    st.token, static_cast<int>(st.pduInfos.size()));
+    m_logger->debug("handover ho.role=target ho.state=PATH_SWITCH_SENT ho.ue_id=%d ho.token=%u", ueId, st.token);
 }
 
 void NgapTask::sendHandoverCancel(int ueId, NgapCause cause)
@@ -837,8 +865,10 @@ void NgapTask::hoHousekeeping(int64_t nowMs)
         }
         if (st.commandReceived && nowMs - st.startedAtMs > TNGRELOCoverall)
         {
-            m_logger->err("handover ho.role=source ho.timer.name=TNGRELOCoverall ho.timer.action=expire ho.ue_id=%d ho.token=%u",
-                          it->first, st.token);
+            m_logger->err("handover ho.role=source ho.timer.name=TNGRELOCoverall ho.timer.action=expire ho.ue_id=%d "
+                          "ho.token=%u ho.target.name=%s ho.target.nci=%s ho.target.link_ip=%s",
+                          it->first, st.token, st.targetName.c_str(), NciToHex(st.targetNci).c_str(),
+                          st.targetLinkIp.has_value() ? st.targetLinkIp->c_str() : "n/a");
             it = m_ho1SourceByUe.erase(it);
             continue;
         }
@@ -850,9 +880,11 @@ void NgapTask::hoHousekeeping(int64_t nowMs)
         auto &st = it->second;
         if (!st.completeReceived && nowMs - st.preparedAtMs > preparedTtlMs)
         {
+            int64_t ageMs = nowMs - st.preparedAtMs;
             m_logger->err(
-                "handover ho.role=target ho.timer.name=prepared_ttl ho.timer.action=expire ho.ue_id=%d ho.token=%u",
-                st.ueId, st.token);
+                "handover ho.role=target ho.timer.name=prepared_ttl ho.timer.action=expire ho.ue_id=%d ho.token=%u "
+                "ho.local.nci=%s ho.age_ms=%ld ho.ttl_ms=%ld ho.reason=no_ho_complete",
+                st.ueId, st.token, NciToHex(m_base->config->nci).c_str(), ageMs, preparedTtlMs);
             sendContextRelease(st.ueId, NgapCause::RadioNetwork_tngrelocoverall_expiry);
             it = m_ho1TargetByToken.erase(it);
             continue;

@@ -12,6 +12,8 @@
 #include <cstring>
 #include <optional>
 #include <set>
+#include <sstream>
+#include <arpa/inet.h>
 
 #include <ue/nts.hpp>
 #include <utils/common.hpp>
@@ -195,6 +197,40 @@ std::optional<int> RlsUdpTask::findBestCellIdByLinkIp(const std::string &ip) con
     }
 
     return best;
+}
+
+std::vector<std::string> RlsUdpTask::describeKnownCells() const
+{
+    std::vector<std::string> out{};
+    out.reserve(m_cells.size());
+
+    auto addrToString = [](const InetAddress &addr) {
+        char buf[INET6_ADDRSTRLEN] = {0};
+        const sockaddr *sa = addr.getSockAddr();
+        if (sa->sa_family == AF_INET)
+        {
+            const auto *sin = reinterpret_cast<const sockaddr_in *>(sa);
+            if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf)) != nullptr)
+                return std::string{buf};
+        }
+        else if (sa->sa_family == AF_INET6)
+        {
+            const auto *sin6 = reinterpret_cast<const sockaddr_in6 *>(sa);
+            if (inet_ntop(AF_INET6, &sin6->sin6_addr, buf, sizeof(buf)) != nullptr)
+                return std::string{buf};
+        }
+        return std::string{"?"};
+    };
+
+    for (const auto &it : m_cells)
+    {
+        const auto &cell = it.second;
+        std::stringstream ss{};
+        ss << "cell_id=" << cell.cellId << " ip=" << addrToString(cell.address) << " dbm=" << cell.dbm;
+        out.push_back(ss.str());
+    }
+
+    return out;
 }
 
 } // namespace nr::ue

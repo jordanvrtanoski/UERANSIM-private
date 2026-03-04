@@ -66,6 +66,7 @@ class RlsUdpTask : public NtsTask
     void send(int cellId, const rls::RlsMessage &msg);
 
     std::optional<int> findBestCellIdByLinkIp(const std::string &ip) const;
+    std::vector<std::string> describeKnownCells() const;
 };
 
 } // namespace nr::ue

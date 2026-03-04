@@ -208,7 +208,7 @@ int RlsUdpTask::reserveUeIdForSti(uint64_t sti)
     int ueId = ++m_newIdCounter;
     m_stiToUe[sti] = ueId;
     m_ueMap[ueId].sti = sti;
-    m_ueMap[ueId].lastSeen = 0;
+    m_ueMap[ueId].lastSeen = utils::CurrentTimeMillis();
     return ueId;
 }
 

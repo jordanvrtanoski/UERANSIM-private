@@ -117,6 +117,29 @@ void RlsControlTask::handleRlsMessage(int cellId, rls::RlsMessage &msg)
         {
             if (rls::ho1::LooksLikeHo1(m.pdu))
             {
+                auto sendHoFail = [&](const OctetString &tokenBytes, uint32_t reasonCode, const std::string &detail) {
+                    rls::ho1::Message fail{};
+                    fail.msgType = rls::ho1::MsgType::HO_FAIL;
+                    fail.tlvs.push_back(rls::ho1::Tlv{rls::ho1::tlv::token, tokenBytes.copy()});
+                    fail.tlvs.push_back(rls::ho1::Tlv{rls::ho1::tlv::reason_code, OctetString::FromOctet4(reasonCode)});
+                    if (!detail.empty())
+                    {
+                        OctetString d{};
+                        d.appendUtf8(detail);
+                        fail.tlvs.push_back(rls::ho1::Tlv{rls::ho1::tlv::reason_detail, std::move(d)});
+                    }
+
+                    rls::RlsPduTransmission hoMsg{m_shCtx->sti};
+                    hoMsg.pduType = rls::EPduType::DATA;
+                    hoMsg.pdu = rls::ho1::Encode(fail);
+                    hoMsg.payload = 0;
+                    hoMsg.pduId = 0;
+
+                    m_udpTask->send(m_servingCell, hoMsg);
+                    m_logger->info("handover ho.role=ue ho.private.event=fail_tx ho.token=%s ho.reason_code=%u ho.detail=%s",
+                                   tokenBytes.toHexString().c_str(), reasonCode, detail.c_str());
+                };
+
                 auto decoded = rls::ho1::Decode(m.pdu);
                 if (!decoded.ok)
                 {
@@ -140,9 +163,14 @@ void RlsControlTask::handleRlsMessage(int cellId, rls::RlsMessage &msg)
                 auto token = rls::ho1::FindTlvBytes(decoded.message, rls::ho1::tlv::token);
                 auto targetLinkIp = rls::ho1::FindTlvUtf8(decoded.message, rls::ho1::tlv::target_link_ip);
 
-                if (!token.has_value() || !targetLinkIp.has_value())
+                if (!token.has_value())
                 {
                     m_logger->debug("handover ho.role=ue ho.private.event=fail_rx ho.private.drop_reason=missing_fields");
+                    return;
+                }
+                if (!targetLinkIp.has_value())
+                {
+                    sendHoFail(*token, 1, "missing_target_link_ip");
                     return;
                 }
 
@@ -152,13 +180,30 @@ void RlsControlTask::handleRlsMessage(int cellId, rls::RlsMessage &msg)
 
                 if (targetCellId == 0)
                 {
-                    m_logger->debug("handover ho.role=ue ho.private.event=fail_rx ho.private.drop_reason=target_not_found");
+                    auto knownCells = m_udpTask->describeKnownCells();
+                    std::string cellsStr = "none";
+                    if (!knownCells.empty())
+                    {
+                        cellsStr.clear();
+                        for (size_t i = 0; i < knownCells.size(); ++i)
+                        {
+                            if (i != 0)
+                                cellsStr += "; ";
+                            cellsStr += knownCells[i];
+                        }
+                    }
+                    m_logger->debug("handover ho.role=ue ho.private.event=fail_rx ho.private.drop_reason=target_not_found "
+                                    "ho.target.link_ip=%s ho.known_cells=%s",
+                                    targetLinkIp->c_str(), cellsStr.c_str());
+                    sendHoFail(*token, 2, "target_not_found:" + *targetLinkIp);
                     return;
                 }
 
                 m_logger->info("handover ho.role=ue ho.private.event=cmd_rx ho.token=%s ho.target.cell_id=%d ho.target.link_ip=%s",
                                token->toHexString().c_str(), targetCellId, targetLinkIp->c_str());
 
+                m_logger->debug("handover ho.role=ue ho.state=SWITCH_SERVING_CELL ho.from_cell_id=%d ho.to_cell_id=%d",
+                                m_servingCell, targetCellId);
                 m_servingCell = targetCellId;
 
                 // Send HO_COMPLETE to target after switching serving cell
