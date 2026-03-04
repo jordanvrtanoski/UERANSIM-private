@@ -25,6 +25,7 @@
 #include <asn/ngap/ASN_NGAP_HandoverCancel.h>
 #include <asn/ngap/ASN_NGAP_HandoverCommand.h>
 #include <asn/ngap/ASN_NGAP_HandoverCancelAcknowledge.h>
+#include <asn/ngap/ASN_NGAP_HandoverFailure.h>
 #include <asn/ngap/ASN_NGAP_HandoverPreparationFailure.h>
 #include <asn/ngap/ASN_NGAP_HandoverNotify.h>
 #include <asn/ngap/ASN_NGAP_HandoverRequest.h>
@@ -47,6 +48,14 @@
 #include <asn/ngap/ASN_NGAP_QosFlowItemWithDataForwarding.h>
 #include <asn/ngap/ASN_NGAP_QosFlowAcceptedItem.h>
 #include <asn/ngap/ASN_NGAP_QosFlowSetupRequestItem.h>
+#include <asn/ngap/ASN_NGAP_SourceNGRANNode-ToTargetNGRANNode-TransparentContainer.h>
+#include <asn/ngap/ASN_NGAP_TargetNGRANNode-ToSourceNGRANNode-TransparentContainer.h>
+#include <asn/ngap/ASN_NGAP_LastVisitedCellItem.h>
+#include <asn/ngap/ASN_NGAP_LastVisitedCellInformation.h>
+#include <asn/ngap/ASN_NGAP_LastVisitedNGRANCellInformation.h>
+#include <asn/ngap/ASN_NGAP_CellType.h>
+#include <asn/ngap/ASN_NGAP_CellSize.h>
+#include <asn/ngap/ASN_NGAP_NR-CGI.h>
 #include <asn/ngap/ASN_NGAP_TargetID.h>
 #include <asn/ngap/ASN_NGAP_TargetRANNodeID.h>
 #include <asn/ngap/ASN_NGAP_UESecurityCapabilities.h>
@@ -84,6 +93,51 @@ static std::string NciToHex(int64_t nci)
     return "0x" + utils::IntToHex(static_cast<uint64_t>(nci));
 }
 
+static ASN_NGAP_NGRAN_CGI_t BuildNgranCgi(const Plmn &plmn, int64_t nci)
+{
+    ASN_NGAP_NGRAN_CGI_t cgi{};
+    cgi.present = ASN_NGAP_NGRAN_CGI_PR_nR_CGI;
+    cgi.choice.nR_CGI = asn::New<ASN_NGAP_NR_CGI>();
+    ngap_utils::ToPlmnAsn_Ref(plmn, cgi.choice.nR_CGI->pLMNIdentity);
+    asn::SetBitStringLong<36>(nci, cgi.choice.nR_CGI->nRCellIdentity);
+    return cgi;
+}
+
+static ASN_NGAP_UEHistoryInformation_t BuildUeHistoryInformation(const Plmn &plmn, int64_t nci)
+{
+    ASN_NGAP_UEHistoryInformation_t hist{};
+    auto *item = asn::New<ASN_NGAP_LastVisitedCellItem>();
+    item->lastVisitedCellInformation.present = ASN_NGAP_LastVisitedCellInformation_PR_nGRANCell;
+    item->lastVisitedCellInformation.choice.nGRANCell = asn::New<ASN_NGAP_LastVisitedNGRANCellInformation>();
+    auto *ngran = item->lastVisitedCellInformation.choice.nGRANCell;
+    ngran->globalCellID = BuildNgranCgi(plmn, nci);
+    ngran->cellType.cellSize = ASN_NGAP_CellSize_small;
+    ngran->timeUEStayedInCell = 0;
+    asn::SequenceAdd(hist, item);
+    return hist;
+}
+
+static OctetString BuildSourceToTargetTransparentContainer(const Plmn &srcPlmn, int64_t srcNci, const Plmn &tgtPlmn,
+                                                           int64_t tgtNci, const OctetString &rrcContainer)
+{
+    auto *c = asn::New<ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer>();
+    asn::SetOctetString(c->rRCContainer, rrcContainer);
+    c->targetCell_ID = BuildNgranCgi(tgtPlmn, tgtNci);
+    c->uEHistoryInformation = BuildUeHistoryInformation(srcPlmn, srcNci);
+    OctetString encoded = ngap_encode::EncodeS(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, c);
+    asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, c);
+    return encoded;
+}
+
+static OctetString BuildTargetToSourceTransparentContainer(const OctetString &rrcContainer)
+{
+    auto *c = asn::New<ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer>();
+    asn::SetOctetString(c->rRCContainer, rrcContainer);
+    OctetString encoded = ngap_encode::EncodeS(asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer, c);
+    asn::Free(asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer, c);
+    return encoded;
+}
+
 std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &targetPlmn, int targetTac,
                                                         uint32_t targetGnbId, int targetGnbIdLength, int64_t targetNci,
                                                         const std::string &targetName)
@@ -107,6 +161,13 @@ std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &ta
     if (ueSti == 0)
     {
         m_logger->err("handover ho.role=source ho.ngap.event=ho_required_tx ho.ue_id=%d ho.fail_reason=missing_ue_sti",
+                      ueId);
+        return std::nullopt;
+    }
+
+    if (ue->pduSessions.empty())
+    {
+        m_logger->err("handover ho.role=source ho.ngap.event=ho_required_tx ho.ue_id=%d ho.fail_reason=no_pdu_sessions",
                       ueId);
         return std::nullopt;
     }
@@ -136,7 +197,10 @@ std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &ta
     AddHo1TlvU64(container, rls::ho1::tlv::ue_sti, ueSti);
     AddHo1TlvU64(container, rls::ho1::tlv::timestamp_ms, static_cast<uint64_t>(st.startedAtMs));
 
-    OctetString srcToTgt = rls::ho1::Encode(container);
+    OctetString rrcContainer = rls::ho1::Encode(container);
+    OctetString srcToTgt =
+        BuildSourceToTargetTransparentContainer(m_base->config->plmn, m_base->config->nci, targetPlmn, targetNci,
+                                                rrcContainer);
 
     std::vector<ASN_NGAP_HandoverRequiredIEs *> ies;
 
@@ -176,29 +240,26 @@ std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &ta
     }
     ies.push_back(ieTarget);
 
-    if (!ue->pduSessions.empty())
+    auto *iePs = asn::New<ASN_NGAP_HandoverRequiredIEs>();
+    iePs->id = ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceListHORqd;
+    iePs->criticality = ASN_NGAP_Criticality_ignore;
+    iePs->value.present = ASN_NGAP_HandoverRequiredIEs__value_PR_PDUSessionResourceListHORqd;
+
+    for (int psi : ue->pduSessions)
     {
-        auto *iePs = asn::New<ASN_NGAP_HandoverRequiredIEs>();
-        iePs->id = ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceListHORqd;
-        iePs->criticality = ASN_NGAP_Criticality_ignore;
-        iePs->value.present = ASN_NGAP_HandoverRequiredIEs__value_PR_PDUSessionResourceListHORqd;
+        auto *tr = asn::New<ASN_NGAP_HandoverRequiredTransfer>();
+        OctetString encodedTr = ngap_encode::EncodeS(asn_DEF_ASN_NGAP_HandoverRequiredTransfer, tr);
+        if (encodedTr.length() == 0)
+            throw std::runtime_error("HandoverRequiredTransfer encoding failed");
+        asn::Free(asn_DEF_ASN_NGAP_HandoverRequiredTransfer, tr);
 
-        for (int psi : ue->pduSessions)
-        {
-            auto *tr = asn::New<ASN_NGAP_HandoverRequiredTransfer>();
-            OctetString encodedTr = ngap_encode::EncodeS(asn_DEF_ASN_NGAP_HandoverRequiredTransfer, tr);
-            if (encodedTr.length() == 0)
-                throw std::runtime_error("HandoverRequiredTransfer encoding failed");
-            asn::Free(asn_DEF_ASN_NGAP_HandoverRequiredTransfer, tr);
-
-            auto *item = asn::New<ASN_NGAP_PDUSessionResourceItemHORqd>();
-            item->pDUSessionID = psi;
-            asn::SetOctetString(item->handoverRequiredTransfer, encodedTr);
-            asn::SequenceAdd(iePs->value.choice.PDUSessionResourceListHORqd, item);
-        }
-
-        ies.push_back(iePs);
+        auto *item = asn::New<ASN_NGAP_PDUSessionResourceItemHORqd>();
+        item->pDUSessionID = psi;
+        asn::SetOctetString(item->handoverRequiredTransfer, encodedTr);
+        asn::SequenceAdd(iePs->value.choice.PDUSessionResourceListHORqd, item);
     }
+
+    ies.push_back(iePs);
 
     auto *ieContainer = asn::New<ASN_NGAP_HandoverRequiredIEs>();
     ieContainer->id = ASN_NGAP_ProtocolIE_ID_id_SourceToTarget_TransparentContainer;
@@ -238,12 +299,24 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     }
 
     OctetString srcToTgt = asn::GetOctetString(ieContainer->SourceToTarget_TransparentContainer);
-    auto decoded = rls::ho1::Decode(srcToTgt);
+    auto *s2t = ngap_encode::Decode<ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer>(
+        asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, srcToTgt.data(),
+        static_cast<size_t>(srcToTgt.length()));
+    if (!s2t)
+    {
+        m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.amf_ue_ngap_id=%ld ho.fail_reason=bad_container",
+                      amfUeNgapId);
+        return;
+    }
+
+    OctetString rrcContainer = asn::GetOctetString(s2t->rRCContainer);
+    auto decoded = rls::ho1::Decode(rrcContainer);
     if (!decoded.ok || decoded.message.msgType != rls::ho1::MsgType::NGAP_SRC_TO_TGT)
     {
         m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.amf_ue_ngap_id=%ld ho.fail_reason=bad_container "
                       "ho.drop_reason=%d",
                       amfUeNgapId, static_cast<int>(decoded.reason));
+        asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, s2t);
         return;
     }
 
@@ -254,6 +327,7 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     {
         m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.amf_ue_ngap_id=%ld ho.fail_reason=container_missing_fields",
                       amfUeNgapId);
+        asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, s2t);
         return;
     }
 
@@ -263,6 +337,7 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
         m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.amf_ue_ngap_id=%ld ho.fail_reason=invalid_token_len "
                       "ho.token_len=%d",
                       amfUeNgapId, tokenBytes->length());
+        asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, s2t);
         return;
     }
 
@@ -274,6 +349,7 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     {
         m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.ue_id=%d ho.token=%u ho.fail_reason=ue_context_exists",
                       ueId, token);
+        asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, s2t);
         return;
     }
 
@@ -436,13 +512,23 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
         }
     }
 
+    if (admittedList.empty())
+    {
+        m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.token=%u ho.ue_id=%d ho.fail_reason=no_pdu_admitted",
+                      token, ueId);
+        sendHandoverFailure(ueId, NgapCause::RadioNetwork_no_radio_resources_available_in_target_cell);
+        deleteUeContext(ueId);
+        asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, s2t);
+        return;
+    }
+
     // Build TargetToSource container with token and target link-ip (Phase-1 hint for UE selection).
     rls::ho1::Message t2s{};
     t2s.msgType = rls::ho1::MsgType::NGAP_TGT_TO_SRC;
     t2s.tlvs.push_back(rls::ho1::Tlv{rls::ho1::tlv::token, tokenBytes->copy()});
     AddHo1TlvUtf8(t2s, rls::ho1::tlv::target_link_ip, m_base->config->linkIp);
     AddHo1TlvU64(t2s, rls::ho1::tlv::timestamp_ms, static_cast<uint64_t>(utils::CurrentTimeMillis()));
-    OctetString tgtToSrc = rls::ho1::Encode(t2s);
+    OctetString tgtToSrc = BuildTargetToSourceTransparentContainer(rls::ho1::Encode(t2s));
 
     std::vector<ASN_NGAP_HandoverRequestAcknowledgeIEs *> respIes;
 
@@ -499,6 +585,8 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
         sendHandoverNotify(ueId);
         sendPathSwitchRequest(ueId, m_ho1TargetByToken.at(token));
     }
+
+    asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, s2t);
 }
 
 void NgapTask::receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg)
@@ -530,11 +618,23 @@ void NgapTask::receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg)
     }
 
     OctetString tgtToSrc = asn::GetOctetString(ieContainer->TargetToSource_TransparentContainer);
-    auto decoded = rls::ho1::Decode(tgtToSrc);
+    auto *t2s = ngap_encode::Decode<ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer>(
+        asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer, tgtToSrc.data(),
+        static_cast<size_t>(tgtToSrc.length()));
+    if (!t2s)
+    {
+        m_logger->err("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d ho.fail_reason=bad_container",
+                      ue->ctxId);
+        return;
+    }
+
+    OctetString rrcContainer = asn::GetOctetString(t2s->rRCContainer);
+    auto decoded = rls::ho1::Decode(rrcContainer);
     if (!decoded.ok || decoded.message.msgType != rls::ho1::MsgType::NGAP_TGT_TO_SRC)
     {
         m_logger->err("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d ho.fail_reason=bad_container ho.drop_reason=%d",
                       ue->ctxId, static_cast<int>(decoded.reason));
+        asn::Free(asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer, t2s);
         return;
     }
 
@@ -543,6 +643,7 @@ void NgapTask::receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg)
     {
         m_logger->err("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d ho.fail_reason=missing_token",
                       ue->ctxId);
+        asn::Free(asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer, t2s);
         return;
     }
 
@@ -551,6 +652,7 @@ void NgapTask::receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg)
     {
         m_logger->err("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d ho.fail_reason=invalid_token_len ho.token_len=%d",
                       ue->ctxId, tokenBytes->length());
+        asn::Free(asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer, t2s);
         return;
     }
 
@@ -570,6 +672,18 @@ void NgapTask::receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg)
     {
         m_logger->err("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d ho.token=%u ho.fail_reason=no_target_link_ip",
                       ue->ctxId, token);
+        asn::Free(asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer, t2s);
+        return;
+    }
+
+    uint64_t sti = m_base->rlsTask->getStiForUeId(ue->ctxId);
+    if (sti == 0)
+    {
+        m_logger->err("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d ho.token=%u ho.fail_reason=missing_ue_sti",
+                      ue->ctxId, token);
+        sendHandoverCancel(ue->ctxId, NgapCause::RadioNetwork_handover_cancelled);
+        m_ho1SourceByUe.erase(ue->ctxId);
+        asn::Free(asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer, t2s);
         return;
     }
 
@@ -590,6 +704,7 @@ void NgapTask::receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg)
                    "ho.target.nci=%s ho.target.link_ip=%s",
                    ue->ctxId, token, it->second.targetName.c_str(), NciToHex(it->second.targetNci).c_str(),
                    it->second.targetLinkIp->c_str());
+    asn::Free(asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer, t2s);
 }
 
 void NgapTask::receiveHandoverPreparationFailure(int amfId, ASN_NGAP_HandoverPreparationFailure *msg)
@@ -758,6 +873,23 @@ void NgapTask::sendHandoverNotify(int ueId)
     auto *pdu = asn::ngap::NewMessagePdu<ASN_NGAP_HandoverNotify>(ies);
     sendNgapUeAssociated(ueId, pdu);
     m_logger->info("handover ho.role=target ho.ngap.event=ho_notify_tx ho.ue_id=%d", ueId);
+}
+
+void NgapTask::sendHandoverFailure(int ueId, NgapCause cause)
+{
+    std::vector<ASN_NGAP_HandoverFailureIEs *> ies;
+
+    auto *ieCause = asn::New<ASN_NGAP_HandoverFailureIEs>();
+    ieCause->id = ASN_NGAP_ProtocolIE_ID_id_Cause;
+    ieCause->criticality = ASN_NGAP_Criticality_ignore;
+    ieCause->value.present = ASN_NGAP_HandoverFailureIEs__value_PR_Cause;
+    ngap_utils::ToCauseAsn_Ref(cause, ieCause->value.choice.Cause);
+    ies.push_back(ieCause);
+
+    auto *pdu = asn::ngap::NewMessagePdu<ASN_NGAP_HandoverFailure>(ies);
+    sendNgapUeAssociated(ueId, pdu);
+    m_logger->err("handover ho.role=target ho.ngap.event=ho_failure_tx ho.ue_id=%d ho.cause=%d", ueId,
+                  static_cast<int>(cause));
 }
 
 void NgapTask::sendPathSwitchRequest(int ueId, const Ho1TargetState &st)

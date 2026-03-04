@@ -223,6 +223,7 @@ class NgapTask : public NtsTask
     void receivePathSwitchRequestFailure(int amfId, ASN_NGAP_PathSwitchRequestFailure *msg);
     void handlePrivateMobilityRx(int ueId, OctetString &&payload);
     void sendHandoverNotify(int ueId);
+    void sendHandoverFailure(int ueId, NgapCause cause);
     void sendPathSwitchRequest(int ueId, const Ho1TargetState &st);
     void sendHandoverCancel(int ueId, NgapCause cause);
     void hoHousekeeping(int64_t nowMs);

@@ -194,6 +194,7 @@ void RlsUdpTask::send(int ueId, const rls::RlsMessage &msg)
     if (!m_ueMap.count(ueId))
     {
         // ignore the message
+        m_logger->debug("handover ho.role=source ho.private.event=cmd_drop ho.drop_reason=unknown_ue_id ho.ue_id=%d", ueId);
         return;
     }
 

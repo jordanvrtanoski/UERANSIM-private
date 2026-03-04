@@ -87,7 +87,9 @@ void RlsUdpTask::send(int cellId, const rls::RlsMessage &msg)
     {
         auto sti = m_cellIdToSti[cellId];
         sendRlsPdu(m_cells[sti].address, msg);
+        return;
     }
+    m_logger->debug("handover ho.role=ue ho.private.event=cmd_drop ho.drop_reason=unknown_cell_id ho.cell_id=%d", cellId);
 }
 
 void RlsUdpTask::receiveRlsPdu(const InetAddress &addr, std::unique_ptr<rls::RlsMessage> &&msg)
