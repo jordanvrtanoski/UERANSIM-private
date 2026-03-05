@@ -235,10 +235,14 @@ std::optional<NgapCause> NgapTask::setupPduSessionResource(NgapUeContext *ue, Pd
         return NgapCause::Protocol_semantic_error;
     }
 
-    std::string gtpIp = m_base->config->gtpAdvertiseIp.value_or(m_base->config->gtpIp);
-
-    resource->downTunnel.address = utils::IpToOctetString(gtpIp);
-    resource->downTunnel.teid = ++m_downlinkTeidCounter;
+    if (resource->downTunnel.teid == 0 || resource->downTunnel.address.length() == 0)
+    {
+        std::string gtpIp = m_base->config->gtpAdvertiseIp.value_or(m_base->config->gtpIp);
+        if (resource->downTunnel.address.length() == 0)
+            resource->downTunnel.address = utils::IpToOctetString(gtpIp);
+        if (resource->downTunnel.teid == 0)
+            resource->downTunnel.teid = ++m_downlinkTeidCounter;
+    }
 
     auto w = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::SESSION_CREATE);
     w->resource = resource;

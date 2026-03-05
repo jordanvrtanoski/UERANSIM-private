@@ -12,6 +12,7 @@
 #include <ue/rls/task.hpp>
 
 #include <asn/rrc/ASN_RRC_RRCReject.h>
+#include <asn/rrc/ASN_RRC_RRCReconfiguration.h>
 #include <asn/rrc/ASN_RRC_RRCSetup.h>
 #include <asn/rrc/ASN_RRC_UL-CCCH-Message.h>
 #include <asn/rrc/ASN_RRC_UL-DCCH-Message.h>
@@ -183,6 +184,9 @@ void UeRrcTask::receiveRrcMessage(ASN_RRC_DL_DCCH_Message *msg)
     {
     case ASN_RRC_DL_DCCH_MessageType__c1_PR_dlInformationTransfer:
         receiveDownlinkInformationTransfer(*c1->choice.dlInformationTransfer);
+        break;
+    case ASN_RRC_DL_DCCH_MessageType__c1_PR_rrcReconfiguration:
+        receiveRrcReconfiguration(*c1->choice.rrcReconfiguration);
         break;
     case ASN_RRC_DL_DCCH_MessageType__c1_PR_rrcRelease:
         receiveRrcRelease(*c1->choice.rrcRelease);

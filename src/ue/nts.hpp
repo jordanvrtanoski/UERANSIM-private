@@ -121,6 +121,7 @@ struct NmUeRrcToRls : NtsMessage
         ASSIGN_CURRENT_CELL,
         RRC_PDU_DELIVERY,
         RESET_STI,
+        HANDOVER_COMPLETE,
     } present;
 
     // ASSIGN_CURRENT_CELL
@@ -270,6 +271,7 @@ struct NmUeRlsToRls : NtsMessage
         RADIO_LINK_FAILURE,
         TRANSMISSION_FAILURE,
         ASSIGN_CURRENT_CELL,
+        HANDOVER_COMPLETE,
     } present;
 
     // RECEIVE_RLS_MESSAGE

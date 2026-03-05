@@ -220,4 +220,32 @@ uint64_t RlsUdpTask::getStiForUeId(int ueId) const
     return m_ueMap.at(ueId).sti;
 }
 
+std::optional<int> RlsUdpTask::findLatestUeId() const
+{
+    if (m_ueMap.empty())
+        return std::nullopt;
+
+    if (m_ueMap.size() != 1)
+    {
+        m_logger->warn("handover ho.role=target ho.event=rls_select ho.fail_reason=multiple_ues ho.ue_count=%zu",
+                       m_ueMap.size());
+        return std::nullopt;
+    }
+
+    int bestUeId = 0;
+    int64_t bestSeen = -1;
+    for (const auto &entry : m_ueMap)
+    {
+        if (entry.second.lastSeen > bestSeen)
+        {
+            bestSeen = entry.second.lastSeen;
+            bestUeId = entry.first;
+        }
+    }
+
+    if (bestUeId == 0)
+        return std::nullopt;
+    return bestUeId;
+}
+
 } // namespace nr::gnb

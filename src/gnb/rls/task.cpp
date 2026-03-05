@@ -39,6 +39,11 @@ uint64_t GnbRlsTask::getStiForUeId(int ueId) const
     return m_udpTask->getStiForUeId(ueId);
 }
 
+std::optional<int> GnbRlsTask::findLatestUeId() const
+{
+    return m_udpTask->findLatestUeId();
+}
+
 void GnbRlsTask::onStart()
 {
     m_udpTask->start();

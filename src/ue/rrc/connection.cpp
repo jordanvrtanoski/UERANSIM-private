@@ -11,6 +11,7 @@
 #include <lib/rrc/encode.hpp>
 #include <ue/nas/task.hpp>
 #include <ue/nts.hpp>
+#include <ue/rls/task.hpp>
 #include <utils/random.hpp>
 
 #include <asn/rrc/ASN_RRC_RRCSetup-IEs.h>
@@ -19,6 +20,14 @@
 #include <asn/rrc/ASN_RRC_RRCSetupComplete.h>
 #include <asn/rrc/ASN_RRC_RRCSetupRequest-IEs.h>
 #include <asn/rrc/ASN_RRC_RRCSetupRequest.h>
+#include <asn/rrc/ASN_RRC_CellGroupConfig.h>
+#include <asn/rrc/ASN_RRC_RRCReconfiguration.h>
+#include <asn/rrc/ASN_RRC_RRCReconfiguration-IEs.h>
+#include <asn/rrc/ASN_RRC_RRCReconfigurationComplete-IEs.h>
+#include <asn/rrc/ASN_RRC_RRCReconfigurationComplete.h>
+#include <asn/rrc/ASN_RRC_ServingCellConfigCommon.h>
+#include <asn/rrc/ASN_RRC_SpCellConfig.h>
+#include <asn/rrc/ASN_RRC_ReconfigurationWithSync.h>
 
 namespace nr::ue
 {
@@ -148,6 +157,98 @@ void UeRrcTask::receiveRrcRelease(const ASN_RRC_RRCRelease &msg)
     m_logger->debug("RRC Release received");
     m_state = ERrcState::RRC_IDLE;
     m_base->nasTask->push(std::make_unique<NmUeRrcToNas>(NmUeRrcToNas::RRC_CONNECTION_RELEASE));
+}
+
+void UeRrcTask::receiveRrcReconfiguration(const ASN_RRC_RRCReconfiguration &msg)
+{
+    if (m_state != ERrcState::RRC_CONNECTED)
+    {
+        m_logger->warn("RRC Reconfiguration received while not connected");
+        return;
+    }
+
+    if (msg.criticalExtensions.present != ASN_RRC_RRCReconfiguration__criticalExtensions_PR_rrcReconfiguration)
+        return;
+
+    auto *ies = msg.criticalExtensions.choice.rrcReconfiguration;
+    if (!ies || !ies->secondaryCellGroup)
+    {
+        m_logger->err("RRC Reconfiguration missing secondaryCellGroup for handover");
+        return;
+    }
+
+    auto *cellGroup = rrc::encode::Decode<ASN_RRC_CellGroupConfig>(asn_DEF_ASN_RRC_CellGroupConfig,
+                                                                   *ies->secondaryCellGroup);
+    if (!cellGroup)
+    {
+        m_logger->err("CellGroupConfig decoding failed in RRC Reconfiguration");
+        return;
+    }
+
+    int targetPci = -1;
+    if (cellGroup->spCellConfig && cellGroup->spCellConfig->reconfigurationWithSync &&
+        cellGroup->spCellConfig->reconfigurationWithSync->spCellConfigCommon &&
+        cellGroup->spCellConfig->reconfigurationWithSync->spCellConfigCommon->physCellId)
+    {
+        targetPci = *cellGroup->spCellConfig->reconfigurationWithSync->spCellConfigCommon->physCellId;
+    }
+
+    asn::Free(asn_DEF_ASN_RRC_CellGroupConfig, cellGroup);
+
+    if (targetPci < 0)
+    {
+        m_logger->err("RRC Reconfiguration missing target PhysCellId");
+        return;
+    }
+
+    int targetCellId = 0;
+    for (const auto &entry : m_cellDesc)
+    {
+        if (entry.second.sib1.hasSib1 && entry.second.sib1.pci == targetPci)
+        {
+            targetCellId = entry.first;
+            break;
+        }
+    }
+
+    if (targetCellId == 0)
+    {
+        m_logger->err("RRC Reconfiguration target cell not found for pci[%d]", targetPci);
+        return;
+    }
+
+    ActiveCellInfo newCell{};
+    newCell.cellId = targetCellId;
+    newCell.category = ECellCategory::SUITABLE_CELL;
+    newCell.plmn = m_cellDesc[targetCellId].sib1.plmn;
+    newCell.tac = m_cellDesc[targetCellId].sib1.tac;
+
+    m_base->shCtx.currentCell.set(newCell);
+
+    auto w1 = std::make_unique<NmUeRrcToRls>(NmUeRrcToRls::ASSIGN_CURRENT_CELL);
+    w1->cellId = targetCellId;
+    m_base->rlsTask->push(std::move(w1));
+
+    m_logger->info("RRC handover: switching to cell[%d] pci[%d]", targetCellId, targetPci);
+
+    auto *pdu = asn::New<ASN_RRC_UL_DCCH_Message>();
+    pdu->message.present = ASN_RRC_UL_DCCH_MessageType_PR_c1;
+    pdu->message.choice.c1 = asn::NewFor(pdu->message.choice.c1);
+    pdu->message.choice.c1->present = ASN_RRC_UL_DCCH_MessageType__c1_PR_rrcReconfigurationComplete;
+
+    auto &complete =
+        pdu->message.choice.c1->choice.rrcReconfigurationComplete = asn::New<ASN_RRC_RRCReconfigurationComplete>();
+    complete->rrc_TransactionIdentifier = msg.rrc_TransactionIdentifier;
+    complete->criticalExtensions.present =
+        ASN_RRC_RRCReconfigurationComplete__criticalExtensions_PR_rrcReconfigurationComplete;
+    complete->criticalExtensions.choice.rrcReconfigurationComplete =
+        asn::New<ASN_RRC_RRCReconfigurationComplete_IEs>();
+
+    sendRrcMessage(pdu);
+    asn::Free(asn_DEF_ASN_RRC_UL_DCCH_Message, pdu);
+
+    auto w2 = std::make_unique<NmUeRrcToRls>(NmUeRrcToRls::HANDOVER_COMPLETE);
+    m_base->rlsTask->push(std::move(w2));
 }
 
 void UeRrcTask::handleEstablishmentFailure()

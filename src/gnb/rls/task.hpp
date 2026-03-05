@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <gnb/nts.hpp>
+#include <optional>
 #include <gnb/types.hpp>
 #include <lib/rls/rls_pdu.hpp>
 #include <lib/udp/server_task.hpp>
@@ -45,6 +46,7 @@ class GnbRlsTask : public NtsTask
 
     int reserveUeIdForSti(uint64_t sti);
     uint64_t getStiForUeId(int ueId) const;
+    std::optional<int> findLatestUeId() const;
 
   protected:
     void onStart() override;

@@ -30,6 +30,7 @@ extern "C"
 
     struct ASN_RRC_RRCSetupRequest;
     struct ASN_RRC_RRCSetupComplete;
+    struct ASN_RRC_RRCReconfigurationComplete;
     struct ASN_RRC_ULInformationTransfer;
 }
 
@@ -76,6 +77,7 @@ class GnbRrcTask : public NtsTask
     void handleRadioLinkFailure(int ueId);
     void handlePaging(const asn::Unique<ASN_NGAP_FiveG_S_TMSI> &tmsi,
                       const asn::Unique<ASN_NGAP_TAIListForPaging> &taiList);
+    void handleHandoverCommand(int ueId, const OctetString &rrcReconfiguration);
 
     void receiveUplinkInformationTransfer(int ueId, const ASN_RRC_ULInformationTransfer &msg);
 
@@ -107,6 +109,7 @@ class GnbRrcTask : public NtsTask
     /* Connection Control */
     void receiveRrcSetupRequest(int ueId, const ASN_RRC_RRCSetupRequest &msg);
     void receiveRrcSetupComplete(int ueId, const ASN_RRC_RRCSetupComplete &msg);
+    void receiveRrcReconfigurationComplete(int ueId, const ASN_RRC_RRCReconfigurationComplete &msg);
 };
 
 } // namespace nr::gnb

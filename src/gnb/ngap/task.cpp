@@ -96,6 +96,10 @@ void NgapTask::onLoop()
             handleRadioLinkFailure(w.ueId);
             break;
         }
+        case NmGnbRrcToNgap::HANDOVER_COMPLETE: {
+            handleHandoverComplete(w.ueId);
+            break;
+        }
         }
         break;
     }

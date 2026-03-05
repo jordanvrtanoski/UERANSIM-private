@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -61,6 +62,7 @@ class RlsUdpTask : public NtsTask
 
     int reserveUeIdForSti(uint64_t sti);
     uint64_t getStiForUeId(int ueId) const;
+    std::optional<int> findLatestUeId() const;
 };
 
 } // namespace nr::gnb

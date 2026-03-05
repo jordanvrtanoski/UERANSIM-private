@@ -57,6 +57,9 @@ void RlsControlTask::onLoop()
         case NmUeRlsToRls::SIGNAL_CHANGED:
             handleSignalChange(w.cellId, w.dbm);
             break;
+        case NmUeRlsToRls::HANDOVER_COMPLETE:
+            sendPendingHoComplete();
+            break;
         case NmUeRlsToRls::RECEIVE_RLS_MESSAGE:
             handleRlsMessage(w.cellId, *w.msg);
             break;
@@ -162,23 +165,39 @@ void RlsControlTask::handleRlsMessage(int cellId, rls::RlsMessage &msg)
 
                 auto token = rls::ho1::FindTlvBytes(decoded.message, rls::ho1::tlv::token);
                 auto targetLinkIp = rls::ho1::FindTlvUtf8(decoded.message, rls::ho1::tlv::target_link_ip);
+                auto targetCellId = rls::ho1::FindTlvU32(decoded.message, rls::ho1::tlv::target_cell_id);
+                auto rrcDefer = rls::ho1::FindTlvU32(decoded.message, rls::ho1::tlv::rrc_defer);
 
                 if (!token.has_value())
                 {
                     m_logger->debug("handover ho.role=ue ho.private.event=fail_rx ho.private.drop_reason=missing_fields");
                     return;
                 }
-                if (!targetLinkIp.has_value())
+
+                if (rrcDefer.has_value() && *rrcDefer != 0)
                 {
-                    sendHoFail(*token, 1, "missing_target_link_ip");
+                    m_pendingHoToken = token->copy();
+                    m_logger->info("handover ho.role=ue ho.private.event=cmd_rx ho.action=defer_rrc ho.token=%s",
+                                   token->toHexString().c_str());
                     return;
                 }
 
-                // Phase-1: use link-ip hint to select target cell, then switch serving cell.
-                auto bestCell = m_udpTask->findBestCellIdByLinkIp(*targetLinkIp);
-                int targetCellId = bestCell.value_or(0);
+                int targetCell = 0;
+                std::string targetHint = "n/a";
 
-                if (targetCellId == 0)
+                if (targetCellId.has_value() && *targetCellId != 0)
+                {
+                    targetCell = static_cast<int>(*targetCellId);
+                    targetHint = "cell_id";
+                }
+                else if (targetLinkIp.has_value())
+                {
+                    auto bestCell = m_udpTask->findBestCellIdByLinkIp(*targetLinkIp);
+                    targetCell = bestCell.value_or(0);
+                    targetHint = "link_ip";
+                }
+
+                if (targetCell == 0)
                 {
                     auto knownCells = m_udpTask->describeKnownCells();
                     std::string cellsStr = "none";
@@ -192,19 +211,21 @@ void RlsControlTask::handleRlsMessage(int cellId, rls::RlsMessage &msg)
                             cellsStr += knownCells[i];
                         }
                     }
+                    std::string hintStr = targetLinkIp.has_value() ? *targetLinkIp : "n/a";
                     m_logger->debug("handover ho.role=ue ho.private.event=fail_rx ho.private.drop_reason=target_not_found "
-                                    "ho.target.link_ip=%s ho.known_cells=%s",
-                                    targetLinkIp->c_str(), cellsStr.c_str());
-                    sendHoFail(*token, 2, "target_not_found:" + *targetLinkIp);
+                                    "ho.target.hint=%s ho.target.link_ip=%s ho.known_cells=%s",
+                                    targetHint.c_str(), hintStr.c_str(), cellsStr.c_str());
+                    sendHoFail(*token, 2, "target_not_found");
                     return;
                 }
 
-                m_logger->info("handover ho.role=ue ho.private.event=cmd_rx ho.token=%s ho.target.cell_id=%d ho.target.link_ip=%s",
-                               token->toHexString().c_str(), targetCellId, targetLinkIp->c_str());
+                m_logger->info("handover ho.role=ue ho.private.event=cmd_rx ho.token=%s ho.target.cell_id=%d ho.target.hint=%s",
+                               token->toHexString().c_str(), targetCell, targetHint.c_str());
 
                 m_logger->debug("handover ho.role=ue ho.state=SWITCH_SERVING_CELL ho.from_cell_id=%d ho.to_cell_id=%d",
-                                m_servingCell, targetCellId);
-                m_servingCell = targetCellId;
+                                m_servingCell, targetCell);
+                m_servingCell = targetCell;
+                m_pendingHoToken.reset();
 
                 // Send HO_COMPLETE to target after switching serving cell
                 rls::ho1::Message complete{};
@@ -259,6 +280,37 @@ void RlsControlTask::handleSignalChange(int cellId, int dbm)
     w->cellId = cellId;
     w->dbm = dbm;
     m_mainTask->push(std::move(w));
+}
+
+void RlsControlTask::sendPendingHoComplete()
+{
+    if (!m_pendingHoToken.has_value())
+    {
+        m_logger->debug("handover ho.role=ue ho.private.event=complete_skip ho.reason=no_token");
+        return;
+    }
+
+    if (m_servingCell == 0)
+    {
+        m_logger->debug("handover ho.role=ue ho.private.event=complete_skip ho.reason=no_serving_cell");
+        return;
+    }
+
+    rls::ho1::Message complete{};
+    complete.msgType = rls::ho1::MsgType::HO_COMPLETE;
+    complete.tlvs.push_back(rls::ho1::Tlv{rls::ho1::tlv::token, m_pendingHoToken->copy()});
+
+    rls::RlsPduTransmission hoMsg{m_shCtx->sti};
+    hoMsg.pduType = rls::EPduType::DATA;
+    hoMsg.pdu = rls::ho1::Encode(complete);
+    hoMsg.payload = 0;
+    hoMsg.pduId = 0;
+
+    m_udpTask->send(m_servingCell, hoMsg);
+    m_logger->info("handover ho.role=ue ho.private.event=complete_tx ho.token=%s",
+                   m_pendingHoToken->toHexString().c_str());
+
+    m_pendingHoToken.reset();
 }
 
 void RlsControlTask::handleUplinkRrcDelivery(int cellId, uint32_t pduId, rrc::RrcChannel channel, OctetString &&data)

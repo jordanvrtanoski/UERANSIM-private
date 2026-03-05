@@ -37,6 +37,7 @@ extern "C"
     struct ASN_RRC_RRCSetup;
     struct ASN_RRC_RRCReject;
     struct ASN_RRC_RRCRelease;
+    struct ASN_RRC_RRCReconfiguration;
     struct ASN_RRC_Paging;
     struct ASN_RRC_MIB;
     struct ASN_RRC_SIB1;
@@ -130,6 +131,7 @@ class UeRrcTask : public NtsTask
     void receiveRrcSetup(int cellId, const ASN_RRC_RRCSetup &msg);
     void receiveRrcReject(int cellId, const ASN_RRC_RRCReject &msg);
     void receiveRrcRelease(const ASN_RRC_RRCRelease &msg);
+    void receiveRrcReconfiguration(const ASN_RRC_RRCReconfiguration &msg);
 
     /* Failures */
     void declareRadioLinkFailure(rls::ERlfCause cause);

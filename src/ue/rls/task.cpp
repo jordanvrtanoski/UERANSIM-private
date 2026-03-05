@@ -98,6 +98,11 @@ void UeRlsTask::onLoop()
             m_ctlTask->push(std::move(m));
             break;
         }
+        case NmUeRrcToRls::HANDOVER_COMPLETE: {
+            auto m = std::make_unique<NmUeRlsToRls>(NmUeRlsToRls::HANDOVER_COMPLETE);
+            m_ctlTask->push(std::move(m));
+            break;
+        }
         case NmUeRrcToRls::RRC_PDU_DELIVERY: {
             auto m = std::make_unique<NmUeRlsToRls>(NmUeRlsToRls::UPLINK_RRC);
             m->cellId = w.cellId;

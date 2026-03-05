@@ -102,7 +102,12 @@ class NgapTask : public NtsTask
     struct HoPduInfo
     {
         int psi{};
+        PduSessionType sessionType{PduSessionType::UNSTRUCTURED};
+        AggregateMaximumBitRate sessionAmbr{};
+        bool dataForwardingNotPossible{};
+        GtpTunnel upTunnel{};
         GtpTunnel downTunnel{};
+        asn::Unique<ASN_NGAP_QosFlowSetupRequestList> qosFlows{};
         std::vector<uint8_t> qfis{};
     };
 
@@ -127,6 +132,11 @@ class NgapTask : public NtsTask
         uint32_t token{};
         int ueId{};
         uint64_t ueSti{};
+        int associatedAmfId{};
+        uint16_t stream{};
+        int64_t amfUeNgapId{};
+        int64_t ranUeNgapId{};
+        AggregateMaximumBitRate ueAmbr{};
         std::vector<HoPduInfo> pduInfos{};
         asn::Unique<ASN_NGAP_UESecurityCapabilities> ueSecurityCapabilities{};
         int64_t preparedAtMs{};
@@ -180,6 +190,7 @@ class NgapTask : public NtsTask
     /* Message transport */
     void sendNgapNonUe(int amfId, ASN_NGAP_NGAP_PDU *pdu);
     void sendNgapUeAssociated(int ueId, ASN_NGAP_NGAP_PDU *pdu);
+    void sendNgapDirect(int amfId, uint16_t stream, ASN_NGAP_NGAP_PDU *pdu);
     void handleSctpMessage(int amfId, uint16_t stream, const UniqueBuffer &buffer);
     bool handleSctpStreamId(int amfId, int stream, const ASN_NGAP_NGAP_PDU &pdu);
 
@@ -222,8 +233,11 @@ class NgapTask : public NtsTask
     void receivePathSwitchRequestAcknowledge(int amfId, ASN_NGAP_PathSwitchRequestAcknowledge *msg);
     void receivePathSwitchRequestFailure(int amfId, ASN_NGAP_PathSwitchRequestFailure *msg);
     void handlePrivateMobilityRx(int ueId, OctetString &&payload);
+    void handleHandoverComplete(int ueId);
+    bool bindHandoverTargetUe(int ueId, Ho1TargetState &st);
     void sendHandoverNotify(int ueId);
     void sendHandoverFailure(int ueId, NgapCause cause);
+    void sendHandoverFailureDirect(int amfId, uint16_t stream, int64_t amfUeNgapId, int64_t ranUeNgapId, NgapCause cause);
     void sendPathSwitchRequest(int ueId, const Ho1TargetState &st);
     void sendHandoverCancel(int ueId, NgapCause cause);
     void hoHousekeeping(int64_t nowMs);

@@ -347,6 +347,13 @@ bool utils::IsNumeric(const std::string &str)
     return !str.empty() && std::all_of(str.begin(), str.end(), [](char c) { return (c >= '0' && c <= '9'); });
 }
 
+int utils::DerivePhysCellIdFromNci(int64_t nci)
+{
+    if (nci < 0)
+        return 0;
+    return static_cast<int>(nci % 1008);
+}
+
 void utils::Trim(std::string &s)
 {
     if (s.length() == 0)

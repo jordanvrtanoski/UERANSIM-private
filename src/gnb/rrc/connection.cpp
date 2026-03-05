@@ -35,6 +35,7 @@
 #include <asn/rrc/ASN_RRC_UL-DCCH-Message.h>
 #include <asn/rrc/ASN_RRC_ULInformationTransfer-IEs.h>
 #include <asn/rrc/ASN_RRC_ULInformationTransfer.h>
+#include <asn/rrc/ASN_RRC_RRCReconfigurationComplete.h>
 
 namespace nr::gnb
 {
@@ -129,6 +130,24 @@ void GnbRrcTask::receiveRrcSetupComplete(int ueId, const ASN_RRC_RRCSetupComplet
     w->rrcEstablishmentCause = ue->establishmentCause;
     w->sTmsi = ue->sTmsi;
 
+    m_base->ngapTask->push(std::move(w));
+}
+
+void GnbRrcTask::receiveRrcReconfigurationComplete(int ueId, const ASN_RRC_RRCReconfigurationComplete &msg)
+{
+    auto *ue = tryFindUe(ueId);
+    if (!ue)
+    {
+        ue = createUe(ueId);
+        m_logger->info("RRC context created for HO complete UE[%d]", ueId);
+    }
+
+    (void)msg;
+
+    m_logger->info("RRC Reconfiguration Complete received for UE[%d]", ueId);
+
+    auto w = std::make_unique<NmGnbRrcToNgap>(NmGnbRrcToNgap::HANDOVER_COMPLETE);
+    w->ueId = ueId;
     m_base->ngapTask->push(std::move(w));
 }
 

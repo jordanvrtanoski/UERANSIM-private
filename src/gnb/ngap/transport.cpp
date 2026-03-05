@@ -255,6 +255,51 @@ void NgapTask::sendNgapUeAssociated(int ueId, ASN_NGAP_NGAP_PDU *pdu)
     asn::Free(asn_DEF_ASN_NGAP_NGAP_PDU, pdu);
 }
 
+void NgapTask::sendNgapDirect(int amfId, uint16_t stream, ASN_NGAP_NGAP_PDU *pdu)
+{
+    auto *amf = findAmfContext(amfId);
+    if (amf == nullptr)
+    {
+        asn::Free(asn_DEF_ASN_NGAP_NGAP_PDU, pdu);
+        return;
+    }
+
+    char errorBuffer[1024];
+    size_t len;
+
+    if (asn_check_constraints(&asn_DEF_ASN_NGAP_NGAP_PDU, pdu, errorBuffer, &len) != 0)
+    {
+        m_logger->err("NGAP PDU ASN constraint validation failed");
+        asn::Free(asn_DEF_ASN_NGAP_NGAP_PDU, pdu);
+        return;
+    }
+
+    ssize_t encoded;
+    uint8_t *buffer;
+    if (!ngap_encode::Encode(asn_DEF_ASN_NGAP_NGAP_PDU, pdu, encoded, buffer))
+        m_logger->err("NGAP APER encoding failed");
+    else
+    {
+        auto msg = std::make_unique<NmGnbSctp>(NmGnbSctp::SEND_MESSAGE);
+        msg->clientId = amf->ctxId;
+        msg->stream = stream;
+        msg->buffer = UniqueBuffer{buffer, static_cast<size_t>(encoded)};
+        m_base->sctpTask->push(std::move(msg));
+
+        if (m_base->nodeListener)
+        {
+            std::string xer = ngap_encode::EncodeXer(asn_DEF_ASN_NGAP_NGAP_PDU, pdu);
+            if (xer.length() > 0)
+            {
+                m_base->nodeListener->onSend(app::NodeType::GNB, m_base->config->name, app::NodeType::AMF, amf->amfName,
+                                             app::ConnectionType::NGAP, xer);
+            }
+        }
+    }
+
+    asn::Free(asn_DEF_ASN_NGAP_NGAP_PDU, pdu);
+}
+
 void NgapTask::handleSctpMessage(int amfId, uint16_t stream, const UniqueBuffer &buffer)
 {
     auto *amf = findAmfContext(amfId);

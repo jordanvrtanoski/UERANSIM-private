@@ -75,6 +75,7 @@ static constexpr const uint16_t target_cell_id = 0x0101;
 static constexpr const uint16_t target_nci = 0x0102;
 static constexpr const uint16_t target_name = 0x0103;
 static constexpr const uint16_t target_link_ip = 0x0104;
+static constexpr const uint16_t rrc_defer = 0x0105;
 
 static constexpr const uint16_t reason_code = 0x0201;
 static constexpr const uint16_t reason_detail = 0x0202;
@@ -91,4 +92,3 @@ std::optional<uint32_t> FindTlvU32(const Message &msg, uint16_t type);
 std::optional<uint64_t> FindTlvU64(const Message &msg, uint16_t type);
 
 } // namespace rls::ho1
-

@@ -69,6 +69,9 @@ void GnbRrcTask::onLoop()
         case NmGnbNgapToRrc::PAGING:
             handlePaging(w.uePagingTmsi, w.taiListForPaging);
             break;
+        case NmGnbNgapToRrc::HO_COMMAND:
+            handleHandoverCommand(w.ueId, w.rrcReconfiguration);
+            break;
         }
         break;
     }

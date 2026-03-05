@@ -10,6 +10,7 @@
 
 #include "udp_task.hpp"
 
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -31,6 +32,7 @@ class RlsControlTask : public NtsTask
     RlsUdpTask *m_udpTask;
     std::unordered_map<uint32_t, rls::PduInfo> m_pduMap;
     std::unordered_map<int, std::vector<uint32_t>> m_pendingAck;
+    std::optional<OctetString> m_pendingHoToken;
 
   public:
     explicit RlsControlTask(TaskBase *base, RlsSharedContext *shCtx);
@@ -51,6 +53,7 @@ class RlsControlTask : public NtsTask
     void handleUplinkDataDelivery(int psi, OctetString &&data);
     void onAckControlTimerExpired();
     void onAckSendTimerExpired();
+    void sendPendingHoComplete();
 };
 
 } // namespace nr::ue

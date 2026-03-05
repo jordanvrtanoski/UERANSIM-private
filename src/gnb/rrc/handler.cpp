@@ -29,6 +29,7 @@
 #include <asn/rrc/ASN_RRC_RRCSetup.h>
 #include <asn/rrc/ASN_RRC_RRCSetupComplete-IEs.h>
 #include <asn/rrc/ASN_RRC_RRCSetupComplete.h>
+#include <asn/rrc/ASN_RRC_RRCReconfiguration.h>
 #include <asn/rrc/ASN_RRC_RRCSetupRequest.h>
 #include <asn/rrc/ASN_RRC_UL-CCCH-Message.h>
 #include <asn/rrc/ASN_RRC_UL-CCCH1-Message.h>
@@ -132,6 +133,26 @@ void GnbRrcTask::handlePaging(const asn::Unique<ASN_NGAP_FiveG_S_TMSI> &tmsi,
 
     sendRrcMessage(pdu);
     asn::Free(asn_DEF_ASN_RRC_PCCH_Message, pdu);
+}
+
+void GnbRrcTask::handleHandoverCommand(int ueId, const OctetString &rrcReconfiguration)
+{
+    auto *reconfig = rrc::encode::Decode<ASN_RRC_RRCReconfiguration>(asn_DEF_ASN_RRC_RRCReconfiguration,
+                                                                     rrcReconfiguration);
+    if (!reconfig)
+    {
+        m_logger->err("RRC Reconfiguration decoding failed for HO command");
+        return;
+    }
+
+    auto *pdu = asn::New<ASN_RRC_DL_DCCH_Message>();
+    pdu->message.present = ASN_RRC_DL_DCCH_MessageType_PR_c1;
+    pdu->message.choice.c1 = asn::NewFor(pdu->message.choice.c1);
+    pdu->message.choice.c1->present = ASN_RRC_DL_DCCH_MessageType__c1_PR_rrcReconfiguration;
+    pdu->message.choice.c1->choice.rrcReconfiguration = reconfig;
+
+    sendRrcMessage(ueId, pdu);
+    asn::Free(asn_DEF_ASN_RRC_DL_DCCH_Message, pdu);
 }
 
 } // namespace nr::gnb

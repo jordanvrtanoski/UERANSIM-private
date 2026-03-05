@@ -41,6 +41,7 @@ void AssertNodeName(const std::string &str);
 void Trim(std::string &str);
 void Trim(std::stringstream &str);
 bool IsLittleEndian();
+int DerivePhysCellIdFromNci(int64_t nci);
 
 template <typename T>
 inline void ClearAndDelete(std::vector<T *> &vector)

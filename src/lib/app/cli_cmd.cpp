@@ -193,9 +193,9 @@ static OrderedMap<std::string, CmdEntry> g_gnbCmdEntries = {
     {"ue-count", {"Print the total number of UEs connected the this gNB", "", DefaultDesc, false}},
     {"ue-release", {"Request a UE context release for the given UE", "<ue-id>", DefaultDesc, false}},
     {"ho-start",
-     {"Trigger an N2-based handover (Phase 1: private mobility)", "<ue-id> --target-... <value>", DescForHoStart, true}},
+     {"Trigger an N2-based handover (Phase 2: RRC-based)", "<ue-id> --target-... <value>", DescForHoStart, true}},
     {"ho-status", {"Show active handover state (debug)", "", DefaultDesc, false}},
-    {"ho-cancel", {"Cancel an in-progress handover (Phase 1)", "<ue-id>", DefaultDesc, true}},
+    {"ho-cancel", {"Cancel an in-progress handover", "<ue-id>", DefaultDesc, true}},
 };
 
 static OrderedMap<std::string, CmdEntry> g_ueCmdEntries = {

@@ -53,6 +53,7 @@ struct UeCellDesc
         bool hasSib1 = false;
         bool isReserved = false;
         int64_t nci = 0;
+        int pci = -1;
         int tac = 0;
         Plmn plmn;
         UacAiBarringSet aiBarringSet;
