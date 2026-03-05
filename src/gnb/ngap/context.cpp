@@ -236,6 +236,15 @@ void NgapTask::receiveContextRelease(int amfId, ASN_NGAP_UEContextReleaseCommand
     if (ue == nullptr)
         return;
 
+    if (m_ho1SourceByUe.count(ue->ctxId))
+    {
+        auto token = m_ho1SourceByUe[ue->ctxId].token;
+        m_logger->debug("handover ho.role=source ho.event=release_cmd_rx ho.ue_id=%d ho.token=%u ho.action=clear_state",
+                        ue->ctxId, token);
+        m_ho1SourceByUe.erase(ue->ctxId);
+        m_ho1CancelSentAtMsByUe.erase(ue->ctxId);
+    }
+
     // Notify RRC task
     auto w1 = std::make_unique<NmGnbNgapToRrc>(NmGnbNgapToRrc::AN_RELEASE);
     w1->ueId = ue->ctxId;
