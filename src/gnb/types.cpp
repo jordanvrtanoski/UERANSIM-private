@@ -22,7 +22,7 @@ Json ToJson(const GnbStatusInfo &v)
 Json ToJson(const GnbConfig &v)
 {
     std::string nciHex = "0x" + utils::IntToHex(static_cast<uint64_t>(v.nci));
-    return Json::Obj({
+    Json json = Json::Obj({
         {"name", v.name},
         {"nci", v.nci},
         {"nci-hex", nciHex},
@@ -44,6 +44,28 @@ Json ToJson(const GnbConfig &v)
         {"paging-drx", ToJson(v.pagingDrx)},
         {"ignore-sctp-id", v.ignoreStreamIds},
     });
+
+    if (v.allowedNrEncryptionAlgs || v.allowedNrIntegrityAlgs || v.allowedEutraEncryptionAlgs ||
+        v.allowedEutraIntegrityAlgs)
+    {
+        Json security = Json::Obj({});
+        if (v.allowedNrEncryptionAlgs)
+            security.put("allowed-nr-encryption-algs",
+                         "0x" + utils::IntToHex(static_cast<uint64_t>(v.allowedNrEncryptionAlgs.value())));
+        if (v.allowedNrIntegrityAlgs)
+            security.put("allowed-nr-integrity-algs",
+                         "0x" + utils::IntToHex(static_cast<uint64_t>(v.allowedNrIntegrityAlgs.value())));
+        if (v.allowedEutraEncryptionAlgs)
+            security.put("allowed-eutra-encryption-algs",
+                         "0x" + utils::IntToHex(static_cast<uint64_t>(v.allowedEutraEncryptionAlgs.value())));
+        if (v.allowedEutraIntegrityAlgs)
+            security.put("allowed-eutra-integrity-algs",
+                         "0x" + utils::IntToHex(static_cast<uint64_t>(v.allowedEutraIntegrityAlgs.value())));
+
+        json.put("security", security);
+    }
+
+    return json;
 }
 
 Json ToJson(const NgapAmfContext &v)

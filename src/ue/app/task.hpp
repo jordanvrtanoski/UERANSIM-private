@@ -31,6 +31,8 @@ class UeAppTask : public NtsTask
     std::array<bool, 16> m_ipv6RsInjected{}; // "attempt sequence completed"
     std::array<bool, 16> m_ipv6RsTimerArmed{};
     std::array<uint8_t, 16> m_ipv6RsAttemptsRemaining{};
+    std::array<bool, 16> m_ipv6RsRepeatUntilRa{};
+    std::array<bool, 16> m_ipv6RaSeen{};
     std::array<std::array<uint8_t, 8>, 16> m_ipv6RsIid{};
     ECmState m_cmState{};
 
@@ -48,7 +50,7 @@ class UeAppTask : public NtsTask
   private:
     void receiveStatusUpdate(NmUeStatusUpdate &msg);
     void setupTunInterface(const PduSession *pduSession);
-    void startIpv6RouterSolicitation(int psi, const uint8_t iid[8]);
+    void startIpv6RouterSolicitation(int psi, const uint8_t iid[8], bool repeatUntilRa);
     void scheduleIpv6RouterSolicitation(int psi, int delayMs);
     void trySendIpv6RouterSolicitation(int psi);
 };

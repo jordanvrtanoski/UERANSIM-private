@@ -103,6 +103,9 @@ static nr::gnb::GnbConfig *ReadConfigYaml()
                 nb.name = "neighbor-" + std::to_string(nb.plmn.mcc) + "-" + std::to_string(nb.plmn.mnc) + "-" +
                           std::to_string(nb.getGnbId());
 
+            if (yaml::HasField(n, "linkIp"))
+                nb.linkIp = yaml::GetString(n, "linkIp");
+
             result->neighbors.push_back(std::move(nb));
         }
     }
@@ -139,6 +142,57 @@ static nr::gnb::GnbConfig *ReadConfigYaml()
             result->ngapTimers.preparedTtlMs = yaml::GetInt32(t, "preparedTtlMs", 1, 600000);
         if (yaml::HasField(t, "unmatchedCompleteTtlMs"))
             result->ngapTimers.unmatchedCompleteTtlMs = yaml::GetInt32(t, "unmatchedCompleteTtlMs", 1, 600000);
+    }
+
+    if (yaml::HasField(config, "security"))
+    {
+        auto sec = config["security"];
+        if (sec.Type() != YAML::NodeType::Map)
+            throw std::runtime_error("Field 'security' must be a map.");
+
+        static const std::unordered_set<std::string> kAllowedSecKeys = {
+            "allowedNREncryptionAlgorithms",
+            "allowedNRIntegrityAlgorithms",
+            "allowedEUTRAEncryptionAlgorithms",
+            "allowedEUTRAIntegrityAlgorithms",
+        };
+
+        for (const auto &kv : sec)
+        {
+            auto key = kv.first.as<std::string>();
+            if (!kAllowedSecKeys.count(key))
+                throw std::runtime_error(
+                    "Field 'security' has unknown key '" + key +
+                    "'. Allowed keys: allowedNREncryptionAlgorithms, allowedNRIntegrityAlgorithms, "
+                    "allowedEUTRAEncryptionAlgorithms, allowedEUTRAIntegrityAlgorithms.");
+        }
+
+        auto parseAlgMask = [](const YAML::Node &node, const std::string &key) -> uint16_t {
+            auto list = yaml::GetSequence(node, key);
+            if (list.empty())
+                throw std::runtime_error("Field 'security." + key + "' must be a non-empty sequence.");
+
+            uint16_t mask = 0;
+            for (auto &item : list)
+            {
+                if (!item.IsScalar())
+                    throw std::runtime_error("Field 'security." + key + "' entries must be integers.");
+                int alg = item.as<int>();
+                if (alg < 0 || alg > 15)
+                    throw std::runtime_error("Field 'security." + key + "' entries must be in range 0..15.");
+                mask |= static_cast<uint16_t>(1u << (15 - alg));
+            }
+            return mask;
+        };
+
+        if (yaml::HasField(sec, "allowedNREncryptionAlgorithms"))
+            result->allowedNrEncryptionAlgs = parseAlgMask(sec, "allowedNREncryptionAlgorithms");
+        if (yaml::HasField(sec, "allowedNRIntegrityAlgorithms"))
+            result->allowedNrIntegrityAlgs = parseAlgMask(sec, "allowedNRIntegrityAlgorithms");
+        if (yaml::HasField(sec, "allowedEUTRAEncryptionAlgorithms"))
+            result->allowedEutraEncryptionAlgs = parseAlgMask(sec, "allowedEUTRAEncryptionAlgorithms");
+        if (yaml::HasField(sec, "allowedEUTRAIntegrityAlgorithms"))
+            result->allowedEutraIntegrityAlgs = parseAlgMask(sec, "allowedEUTRAIntegrityAlgorithms");
     }
 
     return result;

@@ -232,9 +232,62 @@ void NgapTask::receiveContextRelease(int amfId, ASN_NGAP_UEContextReleaseCommand
 {
     m_logger->debug("UE Context Release Command received");
 
-    auto *ue = findUeByNgapIdPair(amfId, ngap_utils::FindNgapIdPairFromUeNgapIds(msg));
-    if (ue == nullptr)
+    auto idPair = ngap_utils::FindNgapIdPairFromUeNgapIds(msg);
+    if (!idPair.amfUeNgapId.has_value() && !idPair.ranUeNgapId.has_value())
+    {
+        sendErrorIndication(amfId, NgapCause::Protocol_abstract_syntax_error_falsely_constructed_message);
         return;
+    }
+
+    NgapUeContext *ue = nullptr;
+    if (idPair.ranUeNgapId.has_value())
+        ue = findUeByRanId(idPair.ranUeNgapId.value());
+    if (!ue && idPair.amfUeNgapId.has_value())
+        ue = findUeByAmfId(idPair.amfUeNgapId.value());
+
+    if (ue == nullptr)
+    {
+        for (auto it = m_ho1TargetByToken.begin(); it != m_ho1TargetByToken.end(); ++it)
+        {
+            auto &st = it->second;
+            if (idPair.amfUeNgapId.has_value() && st.amfUeNgapId != idPair.amfUeNgapId.value())
+                continue;
+            if (idPair.ranUeNgapId.has_value() && st.ranUeNgapId != idPair.ranUeNgapId.value())
+                continue;
+
+            m_logger->debug(
+                "handover ho.role=target ho.event=release_cmd_rx ho.ue_id=0 ho.token=%u ho.action=clear_prepared",
+                st.token);
+
+            std::vector<ASN_NGAP_UEContextReleaseComplete_IEs *> ies;
+
+            if (st.amfUeNgapId >= 0)
+            {
+                auto *ie = asn::New<ASN_NGAP_UEContextReleaseComplete_IEs>();
+                ie->id = ASN_NGAP_ProtocolIE_ID_id_AMF_UE_NGAP_ID;
+                ie->criticality = ASN_NGAP_Criticality_ignore;
+                ie->value.present = ASN_NGAP_UEContextReleaseComplete_IEs__value_PR_AMF_UE_NGAP_ID;
+                asn::SetSigned64(st.amfUeNgapId, ie->value.choice.AMF_UE_NGAP_ID);
+                ies.push_back(ie);
+            }
+
+            auto *ieRan = asn::New<ASN_NGAP_UEContextReleaseComplete_IEs>();
+            ieRan->id = ASN_NGAP_ProtocolIE_ID_id_RAN_UE_NGAP_ID;
+            ieRan->criticality = ASN_NGAP_Criticality_ignore;
+            ieRan->value.present = ASN_NGAP_UEContextReleaseComplete_IEs__value_PR_RAN_UE_NGAP_ID;
+            ieRan->value.choice.RAN_UE_NGAP_ID = static_cast<ASN_NGAP_RAN_UE_NGAP_ID_t>(st.ranUeNgapId);
+            ies.push_back(ieRan);
+
+            auto *response = asn::ngap::NewMessagePdu<ASN_NGAP_UEContextReleaseComplete>(ies);
+            sendNgapDirect(st.associatedAmfId, st.stream, response);
+
+            m_ho1TargetByToken.erase(it);
+            return;
+        }
+
+        sendErrorIndication(amfId, NgapCause::RadioNetwork_unknown_local_UE_NGAP_ID);
+        return;
+    }
 
     if (m_ho1SourceByUe.count(ue->ctxId))
     {

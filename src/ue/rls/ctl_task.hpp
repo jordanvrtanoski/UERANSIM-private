@@ -26,6 +26,7 @@ class RlsControlTask : public NtsTask
 {
   private:
     std::unique_ptr<Logger> m_logger;
+    TaskBase *m_base{};
     RlsSharedContext *m_shCtx;
     int m_servingCell;
     NtsTask *m_mainTask;

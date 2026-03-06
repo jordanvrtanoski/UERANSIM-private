@@ -177,6 +177,31 @@ void RlsUdpTask::initialize(NtsTask *ctlTask)
     m_ctlTask = ctlTask;
 }
 
+void RlsUdpTask::touchTargetLinkIp(const std::string &ip)
+{
+    InetAddress addr{ip, cons::RadioLinkPort};
+    bool exists = false;
+    for (const auto &entry : m_searchSpace)
+    {
+        if (entry.getSockLen() == addr.getSockLen() &&
+            std::memcmp(entry.getSockAddr(), addr.getSockAddr(), entry.getSockLen()) == 0)
+        {
+            exists = true;
+            break;
+        }
+    }
+
+    if (!exists)
+        m_searchSpace.push_back(addr);
+
+    m_logger->debug("handover ho.role=ue ho.private.event=touch_link_ip ho.target.link_ip=%s ho.action=%s", ip.c_str(),
+                    exists ? "heartbeat" : "add_and_heartbeat");
+
+    rls::RlsHeartBeat msg{m_shCtx->sti};
+    msg.simPos = m_simPos;
+    sendRlsPdu(addr, msg);
+}
+
 std::optional<int> RlsUdpTask::findBestCellIdByLinkIp(const std::string &ip) const
 {
     InetAddress needle{ip, cons::RadioLinkPort};

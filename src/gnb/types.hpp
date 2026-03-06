@@ -308,6 +308,7 @@ struct GnbNeighborConfig
     int gnbIdLength{}; // 22..32 bit
     Plmn plmn{};
     int tac{};
+    std::optional<std::string> linkIp{};
 
     [[nodiscard]] inline uint32_t getGnbId() const
     {
@@ -347,6 +348,10 @@ struct GnbConfig
     std::string gtpIp{};
     std::optional<std::string> gtpAdvertiseIp{};
     bool ignoreStreamIds{};
+    std::optional<uint16_t> allowedNrEncryptionAlgs{};
+    std::optional<uint16_t> allowedNrIntegrityAlgs{};
+    std::optional<uint16_t> allowedEutraEncryptionAlgs{};
+    std::optional<uint16_t> allowedEutraIntegrityAlgs{};
 
     /* Assigned by program */
     std::string name{};

@@ -41,6 +41,7 @@ void UeRrcTask::notifyCellDetected(int cellId, int dbm)
                     static_cast<int>(m_cellDesc.size()));
 
     updateAvailablePlmns();
+    tryCompletePendingHandover();
 }
 
 void UeRrcTask::notifyCellLost(int cellId)

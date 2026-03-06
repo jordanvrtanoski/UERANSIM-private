@@ -9,6 +9,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -67,6 +68,8 @@ class UeRrcTask : public NtsTask
     int m_establishmentCause{};
     ASN_RRC_InitialUE_Identity_t m_initialId{};
     OctetString m_initialNasPdu{};
+    std::optional<int> m_pendingHoTargetPci{};
+    std::optional<long> m_pendingHoTxnId{};
 
     friend class UeCmdHandler;
 
@@ -116,6 +119,7 @@ class UeRrcTask : public NtsTask
     bool hasSignalToCell(int cellId);
     bool isActiveCell(int cellId);
     void updateAvailablePlmns();
+    void tryCompletePendingHandover();
 
     /* System Information and Broadcast */
     void receiveMib(int cellId, const ASN_RRC_MIB &msg);

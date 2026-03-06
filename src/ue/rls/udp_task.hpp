@@ -65,6 +65,7 @@ class RlsUdpTask : public NtsTask
     void initialize(NtsTask *ctlTask);
     void send(int cellId, const rls::RlsMessage &msg);
 
+    void touchTargetLinkIp(const std::string &ip);
     std::optional<int> findBestCellIdByLinkIp(const std::string &ip) const;
     std::vector<std::string> describeKnownCells() const;
 };

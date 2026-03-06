@@ -228,7 +228,7 @@ void GnbCmdHandler::handleCmdImpl(NmGnbCliCommand &msg)
 
         auto token = m_base->ngapTask->startN2HandoverPhase1(msg.cmd->ueId, target->plmn, target->tac,
                                                              target->getGnbId(), target->gnbIdLength, target->nci,
-                                                             target->name);
+                                                             target->name, target->linkIp);
         if (!token.has_value())
         {
             sendError(msg.address, "Handover start failed (see logs for details)");

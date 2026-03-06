@@ -26,6 +26,7 @@
 #include <asn/ngap/ASN_NGAP_GNB-ID.h>
 #include <asn/ngap/ASN_NGAP_HandoverCancel.h>
 #include <asn/ngap/ASN_NGAP_HandoverCommand.h>
+#include <asn/ngap/ASN_NGAP_HandoverCommandTransfer.h>
 #include <asn/ngap/ASN_NGAP_HandoverCancelAcknowledge.h>
 #include <asn/ngap/ASN_NGAP_HandoverFailure.h>
 #include <asn/ngap/ASN_NGAP_HandoverPreparationFailure.h>
@@ -42,16 +43,28 @@
 #include <asn/ngap/ASN_NGAP_PathSwitchRequestTransfer.h>
 #include <asn/ngap/ASN_NGAP_PDUSessionResourceAdmittedItem.h>
 #include <asn/ngap/ASN_NGAP_PDUSessionResourceFailedToSetupItemHOAck.h>
+#include <asn/ngap/ASN_NGAP_PDUSessionResourceHandoverList.h>
+#include <asn/ngap/ASN_NGAP_PDUSessionResourceHandoverItem.h>
 #include <asn/ngap/ASN_NGAP_PDUSessionResourceItemHORqd.h>
+#include <asn/ngap/ASN_NGAP_PDUSessionResourceReleasedItemPSAck.h>
+#include <asn/ngap/ASN_NGAP_PDUSessionResourceReleasedItemPSFail.h>
 #include <asn/ngap/ASN_NGAP_PDUSessionResourceSetupItemHOReq.h>
 #include <asn/ngap/ASN_NGAP_PDUSessionResourceSetupRequestTransfer.h>
 #include <asn/ngap/ASN_NGAP_PDUSessionResourceToBeSwitchedDLItem.h>
+#include <asn/ngap/ASN_NGAP_NGAPIESupportInformationRequestList.h>
+#include <asn/ngap/ASN_NGAP_NGAPIESupportInformationRequestItem.h>
+#include <asn/ngap/ASN_NGAP_NGAPIESupportInformationResponseList.h>
+#include <asn/ngap/ASN_NGAP_NGAPIESupportInformationResponseItem.h>
 #include <asn/ngap/ASN_NGAP_ProtocolIE-Field.h>
+#include <asn/ngap/ASN_NGAP_ProtocolExtensionContainer.h>
+#include <asn/ngap/ASN_NGAP_ProtocolExtensionField.h>
 #include <asn/ngap/ASN_NGAP_QosFlowItemWithDataForwarding.h>
 #include <asn/ngap/ASN_NGAP_QosFlowAcceptedItem.h>
 #include <asn/ngap/ASN_NGAP_QosFlowSetupRequestItem.h>
 #include <asn/ngap/ASN_NGAP_SourceNGRANNode-ToTargetNGRANNode-TransparentContainer.h>
 #include <asn/ngap/ASN_NGAP_TargetNGRANNode-ToSourceNGRANNode-TransparentContainer.h>
+#include <asn/ngap/ASN_NGAP_TargetNGRANNode-ToSourceNGRANNode-FailureTransparentContainer.h>
+#include <asn/ngap/ASN_NGAP_UPTransportLayerInformation.h>
 #include <asn/ngap/ASN_NGAP_LastVisitedCellItem.h>
 #include <asn/ngap/ASN_NGAP_LastVisitedCellInformation.h>
 #include <asn/ngap/ASN_NGAP_LastVisitedNGRANCellInformation.h>
@@ -89,6 +102,11 @@ static std::string NciToHex(int64_t nci)
     return "0x" + utils::IntToHex(static_cast<uint64_t>(nci));
 }
 
+static uint16_t BitStringToMask16(const BIT_STRING_t &source)
+{
+    return static_cast<uint16_t>(asn::GetBitStringInt<16>(source));
+}
+
 static uint32_t MakeHoTokenFromAmfUeNgapId(int64_t amfUeNgapId, uint32_t fallback)
 {
     if (amfUeNgapId < 0)
@@ -99,6 +117,66 @@ static uint32_t MakeHoTokenFromAmfUeNgapId(int64_t amfUeNgapId, uint32_t fallbac
     if (token == 0)
         token = fallback;
     return token;
+}
+
+static bool IsSupportedHandoverRequestIe(int64_t id)
+{
+    switch (id)
+    {
+    case ASN_NGAP_ProtocolIE_ID_id_AMF_UE_NGAP_ID:
+    case ASN_NGAP_ProtocolIE_ID_id_RAN_UE_NGAP_ID:
+    case ASN_NGAP_ProtocolIE_ID_id_UEAggregateMaximumBitRate:
+    case ASN_NGAP_ProtocolIE_ID_id_UESecurityCapabilities:
+    case ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceSetupListHOReq:
+    case ASN_NGAP_ProtocolIE_ID_id_SourceToTarget_TransparentContainer:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static std::optional<OctetString> BuildHandoverFailureTransparentContainer(
+    const ASN_NGAP_NGAPIESupportInformationRequestList &reqList, ASN_NGAP_HandoverRequest *msg)
+{
+    auto *container = asn::New<ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_FailureTransparentContainer>();
+    auto *extContainer = asn::New<ASN_NGAP_ProtocolExtensionContainer_174P329_t>();
+    container->iE_Extensions = reinterpret_cast<ASN_NGAP_ProtocolExtensionContainer *>(extContainer);
+
+    auto *ext = asn::New<ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_FailureTransparentContainer_ExtIEs>();
+    ext->id = ASN_NGAP_ProtocolIE_ID_id_NGAPIESupportInformationResponseList;
+    ext->criticality = ASN_NGAP_Criticality_ignore;
+    ext->extensionValue.present =
+        ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_FailureTransparentContainer_ExtIEs__extensionValue_PR_NGAPIESupportInformationResponseList;
+
+    auto &respList = ext->extensionValue.choice.NGAPIESupportInformationResponseList;
+    for (int i = 0; i < reqList.list.count; i++)
+    {
+        auto &reqItem = reqList.list.array[i];
+        if (!reqItem)
+            continue;
+
+        auto *respItem = asn::New<ASN_NGAP_NGAPIESupportInformationResponseItem>();
+        respItem->ngap_ProtocolIE_Id = reqItem->ngap_ProtocolIE_Id;
+        respItem->ngap_ProtocolIESupportInfo =
+            IsSupportedHandoverRequestIe(reqItem->ngap_ProtocolIE_Id)
+                ? ASN_NGAP_NGAPIESupportInformationResponseItem__ngap_ProtocolIESupportInfo_supported
+                : ASN_NGAP_NGAPIESupportInformationResponseItem__ngap_ProtocolIESupportInfo_not_supported;
+        respItem->ngap_ProtocolIEPresenceInfo =
+            asn::ngap::GetProtocolIe(msg, reqItem->ngap_ProtocolIE_Id)
+                ? ASN_NGAP_NGAPIESupportInformationResponseItem__ngap_ProtocolIEPresenceInfo_present
+                : ASN_NGAP_NGAPIESupportInformationResponseItem__ngap_ProtocolIEPresenceInfo_not_present;
+
+        asn::SequenceAdd(respList, respItem);
+    }
+
+    ASN_SEQUENCE_ADD(&extContainer->list, ext);
+
+    OctetString encoded = ngap_encode::EncodeS(
+        asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_FailureTransparentContainer, container);
+    asn::Free(asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_FailureTransparentContainer, container);
+    if (encoded.length() == 0)
+        return std::nullopt;
+    return encoded;
 }
 
 static int CellIdFromNci(int64_t nci, int gnbIdLength)
@@ -219,7 +297,8 @@ static OctetString BuildTargetToSourceTransparentContainer(const OctetString &rr
 
 std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &targetPlmn, int targetTac,
                                                         uint32_t targetGnbId, int targetGnbIdLength, int64_t targetNci,
-                                                        const std::string &targetName)
+                                                        const std::string &targetName,
+                                                        const std::optional<std::string> &targetLinkIp)
 {
     auto *ue = findUeContext(ueId);
     if (!ue)
@@ -252,6 +331,8 @@ std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &ta
     st.targetGnbId = targetGnbId;
     st.targetGnbIdLength = targetGnbIdLength;
     st.targetName = targetName;
+    st.targetLinkIp = targetLinkIp;
+    st.ueSti = m_base->rlsTask->getStiForUeId(ueId);
     st.startedAtMs = utils::CurrentTimeMillis();
     st.commandReceived = false;
 
@@ -359,12 +440,15 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     }
 
     int64_t amfUeNgapId = asn::GetSigned64(ieAmfUeNgapId->AMF_UE_NGAP_ID);
+    int64_t ranUeNgapId = ++m_ueNgapIdCounter;
+    uint32_t token = MakeHoTokenFromAmfUeNgapId(amfUeNgapId, ++m_ho1TokenCounter);
 
     auto *ieContainer = asn::ngap::GetProtocolIe(msg, ASN_NGAP_ProtocolIE_ID_id_SourceToTarget_TransparentContainer);
     if (!ieContainer)
     {
         m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.amf_ue_ngap_id=%ld ho.fail_reason=missing_container",
                       amfUeNgapId);
+        sendHandoverFailureDirect(amfId, stream, amfUeNgapId, ranUeNgapId, NgapCause::Protocol_semantic_error);
         return;
     }
 
@@ -376,6 +460,7 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     {
         m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.amf_ue_ngap_id=%ld ho.fail_reason=bad_container",
                       amfUeNgapId);
+        sendHandoverFailureDirect(amfId, stream, amfUeNgapId, ranUeNgapId, NgapCause::Protocol_transfer_syntax_error);
         return;
     }
 
@@ -386,13 +471,38 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     {
         m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.amf_ue_ngap_id=%ld ho.fail_reason=bad_container",
                       amfUeNgapId);
+        sendHandoverFailureDirect(amfId, stream, amfUeNgapId, ranUeNgapId, NgapCause::Protocol_transfer_syntax_error);
         asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, s2t);
         return;
     }
     asn::Free(asn_DEF_ASN_RRC_HandoverPreparationInformation, hpi);
 
-    uint32_t token = MakeHoTokenFromAmfUeNgapId(amfUeNgapId, ++m_ho1TokenCounter);
-    int64_t ranUeNgapId = ++m_ueNgapIdCounter;
+    asn::Unique<ASN_NGAP_NGAPIESupportInformationRequestList> supportReqList{};
+    if (s2t->iE_Extensions)
+    {
+        auto *extContainer = reinterpret_cast<ASN_NGAP_ProtocolExtensionContainer_174P314_t *>(s2t->iE_Extensions);
+        for (int i = 0; i < extContainer->list.count; i++)
+        {
+            auto &ext = extContainer->list.array[i];
+            if (!ext)
+                continue;
+            if (ext->extensionValue.present ==
+                ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer_ExtIEs__extensionValue_PR_NGAPIESupportInformationRequestList)
+            {
+                auto *copy = asn::New<ASN_NGAP_NGAPIESupportInformationRequestList>();
+                asn::DeepCopy(asn_DEF_ASN_NGAP_NGAPIESupportInformationRequestList,
+                              ext->extensionValue.choice.NGAPIESupportInformationRequestList, copy);
+                supportReqList = asn::WrapUnique(copy, asn_DEF_ASN_NGAP_NGAPIESupportInformationRequestList);
+                break;
+            }
+        }
+    }
+
+    auto buildFailTransparent = [&]() -> std::optional<OctetString> {
+        if (!supportReqList)
+            return std::nullopt;
+        return BuildHandoverFailureTransparentContainer(*supportReqList, msg);
+    };
 
     Ho1TargetState st{};
     st.token = token;
@@ -416,6 +526,43 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     if (ieSecCaps)
         st.ueSecurityCapabilities =
             asn::UniqueCopy(ieSecCaps->UESecurityCapabilities, asn_DEF_ASN_NGAP_UESecurityCapabilities);
+
+    if (st.ueSecurityCapabilities)
+    {
+        uint16_t nrEnc = BitStringToMask16(st.ueSecurityCapabilities->nRencryptionAlgorithms);
+        uint16_t nrInt = BitStringToMask16(st.ueSecurityCapabilities->nRintegrityProtectionAlgorithms);
+        uint16_t eutraEnc = BitStringToMask16(st.ueSecurityCapabilities->eUTRAencryptionAlgorithms);
+        uint16_t eutraInt = BitStringToMask16(st.ueSecurityCapabilities->eUTRAintegrityProtectionAlgorithms);
+
+        constexpr uint16_t kAlg0 = static_cast<uint16_t>(1u << 15);
+        bool mismatch = false;
+
+        if (m_base->config->allowedNrEncryptionAlgs &&
+            (((nrEnc | kAlg0) & m_base->config->allowedNrEncryptionAlgs.value()) == 0))
+            mismatch = true;
+        if (m_base->config->allowedNrIntegrityAlgs &&
+            (((nrInt | kAlg0) & m_base->config->allowedNrIntegrityAlgs.value()) == 0))
+            mismatch = true;
+        if (m_base->config->allowedEutraEncryptionAlgs &&
+            (((eutraEnc | kAlg0) & m_base->config->allowedEutraEncryptionAlgs.value()) == 0))
+            mismatch = true;
+        if (m_base->config->allowedEutraIntegrityAlgs &&
+            (((eutraInt | kAlg0) & m_base->config->allowedEutraIntegrityAlgs.value()) == 0))
+            mismatch = true;
+
+        if (mismatch)
+        {
+            m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.token=%u ho.fail_reason=alg_mismatch",
+                          token);
+            auto failTr = buildFailTransparent();
+            sendHandoverFailureDirect(
+                amfId, stream, amfUeNgapId, ranUeNgapId,
+                NgapCause::RadioNetwork_encryption_and_or_integrity_protection_algorithms_not_supported,
+                failTr ? &*failTr : nullptr);
+            asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, s2t);
+            return;
+        }
+    }
 
     std::vector<ASN_NGAP_PDUSessionResourceAdmittedItem *> admittedList;
     std::vector<ASN_NGAP_PDUSessionResourceFailedToSetupItemHOAck *> failedList;
@@ -560,8 +707,10 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     {
         m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.token=%u ho.fail_reason=no_pdu_admitted",
                       token);
+        auto failTr = buildFailTransparent();
         sendHandoverFailureDirect(amfId, stream, amfUeNgapId, ranUeNgapId,
-                                  NgapCause::RadioNetwork_no_radio_resources_available_in_target_cell);
+                                  NgapCause::RadioNetwork_no_radio_resources_available_in_target_cell,
+                                  failTr ? &*failTr : nullptr);
         asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, s2t);
         return;
     }
@@ -571,6 +720,10 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     {
         m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.token=%u ho.fail_reason=rrc_container_encode",
                       token);
+        auto failTr = buildFailTransparent();
+        sendHandoverFailureDirect(amfId, stream, amfUeNgapId, ranUeNgapId,
+                                  NgapCause::RadioNetwork_failure_in_radio_interface_procedure,
+                                  failTr ? &*failTr : nullptr);
         asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, s2t);
         return;
     }
@@ -672,6 +825,26 @@ void NgapTask::receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg)
         return;
     }
 
+    if (auto *ieAmfUeNgapId = asn::ngap::GetProtocolIe(msg, ASN_NGAP_ProtocolIE_ID_id_AMF_UE_NGAP_ID))
+    {
+        int64_t amfUeNgapId = asn::GetSigned64(ieAmfUeNgapId->AMF_UE_NGAP_ID);
+        if (ue->amfUeNgapId != amfUeNgapId)
+        {
+            m_logger->debug("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d "
+                            "ho.amf_ue_ngap_id_old=%ld ho.amf_ue_ngap_id_new=%ld ho.action=update_amf_id",
+                            ue->ctxId, ue->amfUeNgapId, amfUeNgapId);
+            ue->amfUeNgapId = amfUeNgapId;
+        }
+        uint32_t newToken = MakeHoTokenFromAmfUeNgapId(amfUeNgapId, it->second.token);
+        if (newToken != it->second.token)
+        {
+            m_logger->debug("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d ho.token=%u ho.new_token=%u "
+                            "ho.action=rebased_token",
+                            ue->ctxId, it->second.token, newToken);
+            it->second.token = newToken;
+        }
+    }
+
     auto *ieContainer = asn::ngap::GetProtocolIe(msg, ASN_NGAP_ProtocolIE_ID_id_TargetToSource_TransparentContainer);
     if (!ieContainer)
     {
@@ -715,6 +888,50 @@ void NgapTask::receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg)
         return;
     }
 
+    auto *ieHoList = asn::ngap::GetProtocolIe(msg, ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceHandoverList);
+    if (ieHoList)
+    {
+        auto &list = ieHoList->PDUSessionResourceHandoverList.list;
+        for (int i = 0; i < list.count; i++)
+        {
+            auto &item = list.array[i];
+            if (!item)
+                continue;
+
+            auto *transfer = ngap_encode::Decode<ASN_NGAP_HandoverCommandTransfer>(
+                asn_DEF_ASN_NGAP_HandoverCommandTransfer, item->handoverCommandTransfer);
+            if (!transfer)
+            {
+                m_logger->err("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d "
+                              "ho.fail_reason=bad_ho_command_transfer ho.psi=%ld",
+                              ue->ctxId, static_cast<long>(item->pDUSessionID));
+                m_ho1SourceByUe.erase(it);
+                asn::Free(asn_DEF_ASN_RRC_HandoverCommand, hoCmd);
+                asn::Free(asn_DEF_ASN_NGAP_TargetNGRANNode_ToSourceNGRANNode_TransparentContainer, t2s);
+                return;
+            }
+
+            if (transfer->dLForwardingUP_TNLInformation &&
+                transfer->dLForwardingUP_TNLInformation->present ==
+                    ASN_NGAP_UPTransportLayerInformation_PR_gTPTunnel)
+            {
+                bool validPair = false;
+                auto *gtp = transfer->dLForwardingUP_TNLInformation->choice.gTPTunnel;
+                if (gtp && gtp->transportLayerAddress.size > 0 && gtp->gTP_TEID.size > 0)
+                    validPair = true;
+
+                if (!validPair)
+                {
+                    m_logger->warn("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d "
+                                   "ho.warn=invalid_gtp_pair ho.psi=%ld ho.action=ignore_forwarding",
+                                   ue->ctxId, static_cast<long>(item->pDUSessionID));
+                }
+            }
+
+            asn::Free(asn_DEF_ASN_NGAP_HandoverCommandTransfer, transfer);
+        }
+    }
+
     {
         rls::ho1::Message cmd{};
         cmd.msgType = rls::ho1::MsgType::HO_CMD;
@@ -723,6 +940,15 @@ void NgapTask::receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg)
         int targetCellId = CellIdFromNci(it->second.targetNci, it->second.targetGnbIdLength);
         if (targetCellId > 0)
             cmd.tlvs.push_back(rls::ho1::Tlv{rls::ho1::tlv::target_cell_id, OctetString::FromOctet4(targetCellId)});
+
+        cmd.tlvs.push_back(rls::ho1::Tlv{rls::ho1::tlv::target_nci, OctetString::FromOctet8(it->second.targetNci)});
+
+        if (it->second.targetLinkIp.has_value())
+            cmd.tlvs.push_back(
+                rls::ho1::Tlv{rls::ho1::tlv::target_link_ip, OctetString::FromAscii(*it->second.targetLinkIp)});
+
+        if (it->second.ueSti != 0)
+            cmd.tlvs.push_back(rls::ho1::Tlv{rls::ho1::tlv::ue_sti, OctetString::FromOctet8(it->second.ueSti)});
 
         cmd.tlvs.push_back(rls::ho1::Tlv{rls::ho1::tlv::rrc_defer, OctetString::FromOctet4(1)});
 
@@ -785,6 +1011,32 @@ void NgapTask::receivePathSwitchRequestAcknowledge(int amfId, ASN_NGAP_PathSwitc
     m_logger->info("handover ho.role=target ho.ngap.event=path_switch_ack_rx ho.ue_id=%d", ue->ctxId);
     m_logger->debug("handover ho.role=target ho.state=SUCCESS ho.ue_id=%d", ue->ctxId);
 
+    auto *ieReleased =
+        asn::ngap::GetProtocolIe(msg, ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceReleasedListPSAck);
+    if (ieReleased)
+    {
+        auto &list = ieReleased->PDUSessionResourceReleasedListPSAck.list;
+        for (int i = 0; i < list.count; i++)
+        {
+            auto &item = list.array[i];
+            if (!item)
+                continue;
+
+            int psi = static_cast<int>(item->pDUSessionID);
+            if (!ue->pduSessions.count(psi))
+                continue;
+
+            auto w = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::SESSION_RELEASE);
+            w->ueId = ue->ctxId;
+            w->psi = psi;
+            m_base->gtpTask->push(std::move(w));
+
+            ue->pduSessions.erase(psi);
+            m_logger->info("handover ho.role=target ho.event=path_switch_ack_release ho.ue_id=%d ho.psi=%d", ue->ctxId,
+                           psi);
+        }
+    }
+
     for (auto it = m_ho1TargetByToken.begin(); it != m_ho1TargetByToken.end(); ++it)
     {
         if (it->second.ueId == ue->ctxId)
@@ -803,6 +1055,32 @@ void NgapTask::receivePathSwitchRequestFailure(int amfId, ASN_NGAP_PathSwitchReq
 
     m_logger->err("handover ho.role=target ho.ngap.event=path_switch_fail_rx ho.ue_id=%d", ue->ctxId);
     m_logger->debug("handover ho.role=target ho.state=PATH_SWITCH_FAIL ho.ue_id=%d", ue->ctxId);
+
+    auto *ieReleased =
+        asn::ngap::GetProtocolIe(msg, ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceReleasedListPSFail);
+    if (ieReleased)
+    {
+        auto &list = ieReleased->PDUSessionResourceReleasedListPSFail.list;
+        for (int i = 0; i < list.count; i++)
+        {
+            auto &item = list.array[i];
+            if (!item)
+                continue;
+
+            int psi = static_cast<int>(item->pDUSessionID);
+            if (!ue->pduSessions.count(psi))
+                continue;
+
+            auto w = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::SESSION_RELEASE);
+            w->ueId = ue->ctxId;
+            w->psi = psi;
+            m_base->gtpTask->push(std::move(w));
+
+            ue->pduSessions.erase(psi);
+            m_logger->info("handover ho.role=target ho.event=path_switch_fail_release ho.ue_id=%d ho.psi=%d", ue->ctxId,
+                           psi);
+        }
+    }
 
     for (auto it = m_ho1TargetByToken.begin(); it != m_ho1TargetByToken.end(); ++it)
     {
@@ -824,6 +1102,19 @@ bool NgapTask::bindHandoverTargetUe(int ueId, Ho1TargetState &st)
         m_logger->err("handover ho.role=target ho.event=bind_ue_fail ho.ue_id=%d ho.fail_reason=ue_context_exists",
                       ueId);
         return false;
+    }
+
+    if (st.ueSti != 0)
+    {
+        uint64_t actualSti = m_base->rlsTask->getStiForUeId(ueId);
+        if (actualSti != 0 && actualSti != st.ueSti)
+        {
+            m_logger->err("handover ho.role=target ho.event=bind_ue_fail ho.ue_id=%d ho.fail_reason=sti_mismatch "
+                          "ho.sti_expected=0x%llx ho.sti_actual=0x%llx",
+                          ueId, static_cast<unsigned long long>(st.ueSti),
+                          static_cast<unsigned long long>(actualSti));
+            return false;
+        }
     }
 
     auto *ue = new NgapUeContext(ueId);
@@ -885,6 +1176,7 @@ void NgapTask::handlePrivateMobilityRx(int ueId, OctetString &&payload)
     }
 
     auto tokenBytes = rls::ho1::FindTlvBytes(decoded.message, rls::ho1::tlv::token);
+    auto ueStiOpt = rls::ho1::FindTlvU64(decoded.message, rls::ho1::tlv::ue_sti);
     if (!tokenBytes.has_value())
     {
         m_logger->debug("handover ho.role=target ho.private.event=rx_drop ho.private.drop_reason=missing_token");
@@ -941,12 +1233,67 @@ void NgapTask::handlePrivateMobilityRx(int ueId, OctetString &&payload)
 
     if (!m_ho1TargetByToken.count(token))
     {
-        m_logger->debug("handover ho.role=target ho.private.event=rx_unmatched ho.ue_id=%d ho.token=%u", ueId, token);
-        m_ho1UnmatchedCompleteByToken[token] = utils::CurrentTimeMillis();
-        return;
+        if (ueStiOpt.has_value())
+        {
+            uint32_t matchedToken = 0;
+            int matchCount = 0;
+            for (auto &entry : m_ho1TargetByToken)
+            {
+                if (entry.second.ueSti != 0 && entry.second.ueSti == *ueStiOpt)
+                {
+                    matchedToken = entry.first;
+                    matchCount++;
+                }
+            }
+
+            if (matchCount == 1)
+            {
+                auto node = m_ho1TargetByToken.extract(matchedToken);
+                node.key() = token;
+                node.mapped().token = token;
+                m_logger->warn(
+                    "handover ho.role=target ho.private.event=rx_unmatched ho.ue_id=%d ho.token=%u ho.action=rekey_by_sti",
+                    ueId, token);
+                m_ho1TargetByToken.insert(std::move(node));
+            }
+            else if (matchCount == 0 && m_ho1TargetByToken.size() == 1)
+            {
+                auto itOnly = m_ho1TargetByToken.begin();
+                if (itOnly->second.ueId == 0 && !itOnly->second.completeReceived)
+                {
+                    auto node = m_ho1TargetByToken.extract(itOnly);
+                    node.key() = token;
+                    node.mapped().token = token;
+                    node.mapped().ueSti = *ueStiOpt;
+                    m_logger->warn(
+                        "handover ho.role=target ho.private.event=rx_unmatched ho.ue_id=%d ho.token=%u ho.action=rekey_single_prepared",
+                        ueId, token);
+                    m_ho1TargetByToken.insert(std::move(node));
+                }
+            }
+        }
+
+        if (!m_ho1TargetByToken.count(token))
+        {
+            m_logger->debug("handover ho.role=target ho.private.event=rx_unmatched ho.ue_id=%d ho.token=%u", ueId, token);
+            m_ho1UnmatchedCompleteByToken[token] = utils::CurrentTimeMillis();
+            return;
+        }
     }
 
     auto &st = m_ho1TargetByToken.at(token);
+    if (ueStiOpt.has_value())
+    {
+        if (st.ueSti == 0)
+            st.ueSti = *ueStiOpt;
+        else if (st.ueSti != *ueStiOpt)
+        {
+            m_logger->warn("handover ho.role=target ho.private.event=complete_rx ho.token=%u ho.warn=sti_mismatch "
+                           "ho.sti_expected=0x%llx ho.sti_rx=0x%llx",
+                           token, static_cast<unsigned long long>(st.ueSti),
+                           static_cast<unsigned long long>(*ueStiOpt));
+        }
+    }
     if (st.completeReceived)
     {
         m_logger->debug("handover ho.role=target ho.private.event=rx_dup ho.ue_id=%d ho.token=%u", ueId, token);
@@ -1042,7 +1389,7 @@ void NgapTask::sendHandoverFailure(int ueId, NgapCause cause)
 }
 
 void NgapTask::sendHandoverFailureDirect(int amfId, uint16_t stream, int64_t amfUeNgapId, int64_t ranUeNgapId,
-                                         NgapCause cause)
+                                         NgapCause cause, const OctetString *failureTransparent)
 {
     (void)ranUeNgapId;
     std::vector<ASN_NGAP_HandoverFailureIEs *> ies;
@@ -1061,6 +1408,16 @@ void NgapTask::sendHandoverFailureDirect(int amfId, uint16_t stream, int64_t amf
         ie->criticality = ASN_NGAP_Criticality_ignore;
         ie->value.present = ASN_NGAP_HandoverFailureIEs__value_PR_AMF_UE_NGAP_ID;
         asn::SetSigned64(amfUeNgapId, ie->value.choice.AMF_UE_NGAP_ID);
+        ies.push_back(ie);
+    }
+
+    if (failureTransparent && failureTransparent->length() > 0)
+    {
+        auto *ie = asn::New<ASN_NGAP_HandoverFailureIEs>();
+        ie->id = ASN_NGAP_ProtocolIE_ID_id_TargettoSource_Failure_TransparentContainer;
+        ie->criticality = ASN_NGAP_Criticality_ignore;
+        ie->value.present = ASN_NGAP_HandoverFailureIEs__value_PR_TargettoSource_Failure_TransparentContainer;
+        asn::SetOctetString(ie->value.choice.TargettoSource_Failure_TransparentContainer, *failureTransparent);
         ies.push_back(ie);
     }
 
@@ -1230,7 +1587,12 @@ void NgapTask::hoHousekeeping(int64_t nowMs)
     for (auto it = m_ho1CancelSentAtMsByUe.begin(); it != m_ho1CancelSentAtMsByUe.end();)
     {
         if (nowMs - it->second > TNGRELOCprep)
+        {
+            m_logger->info("handover ho.role=source ho.timer.name=ho_cancel_ack_wait ho.timer.action=expire ho.ue_id=%d "
+                           "ho.action=assume_success",
+                           it->first);
             it = m_ho1CancelSentAtMsByUe.erase(it);
+        }
         else
             ++it;
     }

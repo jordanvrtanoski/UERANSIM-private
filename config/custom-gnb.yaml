@@ -19,5 +19,12 @@ slices:
   - sst: 1
     sd: 1
 
+# Optional: restrict allowed security algorithms (indices 0..15)
+# security:
+#   allowedNREncryptionAlgorithms: [0,1,2]
+#   allowedNRIntegrityAlgorithms: [0,1,2]
+#   allowedEUTRAEncryptionAlgorithms: [0,1,2]
+#   allowedEUTRAIntegrityAlgorithms: [0,1,2]
+
 # Indicates whether or not SCTP stream number errors should be ignored.
 ignoreStreamIds: true

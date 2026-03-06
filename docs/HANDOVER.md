@@ -19,6 +19,17 @@ UE config must include **both** gNB `linkIp` addresses so the UE can reselect th
 Optional: tune NGAP timers in gNB config:
 - `ngap-timers: { TNGRELOCprep: 5000, TNGRELOCoverall: 15000, preparedTtlMs: 15000, unmatchedCompleteTtlMs: 5000 }`
 
+Optional: restrict allowed security algorithms (Rel‑17 38.413 §8.4.2.4).  
+These lists are algorithm **indexes** (0–15). If configured, the target gNB rejects HO when there is **no overlap**
+between UE capabilities and the allowed list (while still honoring mandatory algorithm “0” support):
+```
+security:
+  allowedNREncryptionAlgorithms: [0,1,2]
+  allowedNRIntegrityAlgorithms: [0,1,2]
+  allowedEUTRAEncryptionAlgorithms: [0,1,2]
+  allowedEUTRAIntegrityAlgorithms: [0,1,2]
+```
+
 ## CLI Commands
 
 From `nr-cli` connected to a gNB:
@@ -46,4 +57,3 @@ From `nr-cli` connected to a gNB:
 - **Target not found**: ensure `neighbors` match and UE `gnbSearchList` includes both `linkIp`s.
 - **TNGRELOCoverall expiry**: check that the UE received the RRC Reconfiguration and sent RRC Reconfiguration Complete.
 - **No UE on target**: verify radio link (RLS) reachability between UE and target `linkIp`.
-

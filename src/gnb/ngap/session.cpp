@@ -49,6 +49,16 @@ void NgapTask::receiveSessionResourceSetupRequest(int amfId, ASN_NGAP_PDUSession
     if (ue == nullptr)
         return;
 
+    auto hoIt = m_ho1SourceByUe.find(ue->ctxId);
+    if (hoIt != m_ho1SourceByUe.end() && !hoIt->second.commandReceived)
+    {
+        m_logger->warn(
+            "handover ho.role=source ho.event=ho_cancel_due_to_pdu_session_mgmt ho.ue_id=%d ho.token=%u",
+            ue->ctxId, hoIt->second.token);
+        sendHandoverCancel(ue->ctxId, NgapCause::RadioNetwork_interaction_with_other_procedure);
+        m_ho1SourceByUe.erase(hoIt);
+    }
+
     auto *ieList = asn::ngap::GetProtocolIe(msg, ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceSetupListSUReq);
     if (ieList)
     {

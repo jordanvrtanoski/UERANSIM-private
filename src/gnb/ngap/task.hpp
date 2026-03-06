@@ -224,8 +224,8 @@ class NgapTask : public NtsTask
 
     /* Handover (Phase 1: private mobility) */
     std::optional<uint32_t> startN2HandoverPhase1(int ueId, const Plmn &targetPlmn, int targetTac, uint32_t targetGnbId,
-                                                  int targetGnbIdLength, int64_t targetNci,
-                                                  const std::string &targetName);
+                                                  int targetGnbIdLength, int64_t targetNci, const std::string &targetName,
+                                                  const std::optional<std::string> &targetLinkIp);
     void receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_HandoverRequest *msg);
     void receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg);
     void receiveHandoverPreparationFailure(int amfId, ASN_NGAP_HandoverPreparationFailure *msg);
@@ -237,7 +237,8 @@ class NgapTask : public NtsTask
     bool bindHandoverTargetUe(int ueId, Ho1TargetState &st);
     void sendHandoverNotify(int ueId);
     void sendHandoverFailure(int ueId, NgapCause cause);
-    void sendHandoverFailureDirect(int amfId, uint16_t stream, int64_t amfUeNgapId, int64_t ranUeNgapId, NgapCause cause);
+    void sendHandoverFailureDirect(int amfId, uint16_t stream, int64_t amfUeNgapId, int64_t ranUeNgapId,
+                                   NgapCause cause, const OctetString *failureTransparent = nullptr);
     void sendPathSwitchRequest(int ueId, const Ho1TargetState &st);
     void sendHandoverCancel(int ueId, NgapCause cause);
     void hoHousekeeping(int64_t nowMs);

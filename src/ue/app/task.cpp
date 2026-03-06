@@ -169,6 +169,20 @@ void UeAppTask::onLoop()
             auto *tunTask = m_tunTasks[w.psi];
             if (tunTask)
             {
+                if (w.data.length() >= 48)
+                {
+                    const uint8_t *buf = w.data.data();
+                    if ((buf[0] >> 4) == 6 && buf[6] == 58)
+                    {
+                        uint8_t icmpType = buf[40];
+                        if (icmpType == 134 && !m_ipv6RaSeen[w.psi])
+                        {
+                            m_ipv6RaSeen[w.psi] = true;
+                            m_ipv6RsInjected[w.psi] = true;
+                            m_logger->info("IPv6 Router Advertisement received on PSI[%d], stopping RS retries", w.psi);
+                        }
+                    }
+                }
                 auto m = std::make_unique<NmAppToTun>(NmAppToTun::DATA_PDU_DELIVERY);
                 m->psi = w.psi;
                 m->data = std::move(w.data);
@@ -601,7 +615,10 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
         }
 
         if (hasIid)
-            startIpv6RouterSolicitation(psi, iid);
+        {
+            bool repeatUntilRa = (sessionType == nas::EPduSessionType::IPV6);
+            startIpv6RouterSolicitation(psi, iid, repeatUntilRa);
+        }
         else
             m_logger->debug("Skipping IPv6 RS injection for PSI[%d]. Cannot derive IID from PDU address length[%d].", psi,
                             static_cast<int>(pduAddrInfo.length()));
@@ -643,7 +660,7 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
     }
 }
 
-void UeAppTask::startIpv6RouterSolicitation(int psi, const uint8_t iid[8])
+void UeAppTask::startIpv6RouterSolicitation(int psi, const uint8_t iid[8], bool repeatUntilRa)
 {
     if (psi <= 0 || psi > 15)
         return;
@@ -651,6 +668,8 @@ void UeAppTask::startIpv6RouterSolicitation(int psi, const uint8_t iid[8])
         return;
 
     std::memcpy(m_ipv6RsIid[psi].data(), iid, 8);
+    m_ipv6RaSeen[psi] = false;
+    m_ipv6RsRepeatUntilRa[psi] = repeatUntilRa;
     int retries = m_base->config->ipv6RsRetryCount.value_or(DEFAULT_IPV6_RS_RETRY_COUNT);
     if (retries < 0)
         retries = 0;
@@ -683,8 +702,16 @@ void UeAppTask::trySendIpv6RouterSolicitation(int psi)
 
     if (m_ipv6RsAttemptsRemaining[psi] == 0)
     {
-        m_ipv6RsInjected[psi] = true;
-        return;
+        if (m_ipv6RsRepeatUntilRa[psi] && !m_ipv6RaSeen[psi])
+        {
+            m_logger->debug("IPv6 RS: no RA yet for PSI[%d], continuing retries", psi);
+            m_ipv6RsAttemptsRemaining[psi] = 1;
+        }
+        else
+        {
+            m_ipv6RsInjected[psi] = true;
+            return;
+        }
     }
 
     // NAS will drop uplink PDUs when CM is not connected; defer/retry.

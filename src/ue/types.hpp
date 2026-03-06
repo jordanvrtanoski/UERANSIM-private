@@ -190,6 +190,8 @@ struct UeSharedContext
     Locked<std::vector<Tai>> forbiddenTaiRps;
     Locked<std::optional<GutiMobileIdentity>> providedGuti;
     Locked<std::optional<GutiMobileIdentity>> providedTmsi;
+    Locked<std::optional<int>> pendingHoTargetCellId;
+    Locked<std::optional<int64_t>> pendingHoTargetNci;
 
     Plmn getCurrentPlmn();
     Tai getCurrentTai();
