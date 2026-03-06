@@ -63,4 +63,19 @@ bool TunConfigure6(const std::string &tunName, const std::string &ipv6Address, i
     return true;
 }
 
+bool TunQueryIpv6Status(const std::string &tunName, bool &hasGlobalAddress, bool &hasDefaultRoute, std::string &error)
+{
+    try
+    {
+        tun::QueryIpv6Status(tunName.c_str(), hasGlobalAddress, hasDefaultRoute);
+    }
+    catch (const LibError &e)
+    {
+        error = e.what();
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace nr::ue::tun

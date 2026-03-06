@@ -54,10 +54,17 @@ void NasSm::handleUplinkDataRequest(int psi, OctetString &&data)
         state != EMmSubState::MM_REGISTERED_NON_ALLOWED_SERVICE &&
         state != EMmSubState::MM_REGISTERED_LIMITED_SERVICE && state != EMmSubState::MM_DEREGISTERED_INITIATED_PS &&
         state != EMmSubState::MM_SERVICE_REQUEST_INITIATED_PS)
+    {
+        m_logger->debug("UL data drop PSI[%d]: MM substate not allowed state[%d]", psi, static_cast<int>(state));
         return;
+    }
 
     if (m_pduSessions[psi]->psState != EPsState::ACTIVE)
+    {
+        m_logger->debug("UL data drop PSI[%d]: PDU session not active state[%d]", psi,
+                        static_cast<int>(m_pduSessions[psi]->psState));
         return;
+    }
 
     if (m_mm->m_cmState == ECmState::CM_CONNECTED)
     {
@@ -72,6 +79,7 @@ void NasSm::handleUplinkDataRequest(int psi, OctetString &&data)
 
         auto m = std::make_unique<NmUeNasToRls>(NmUeNasToRls::DATA_PDU_DELIVERY);
         m->psi = psi;
+        m_logger->debug("UL data forward PSI[%d] bytes[%d] cm_state[CONNECTED]", psi, static_cast<int>(data.length()));
         m->pdu = std::move(data);
         m_base->rlsTask->push(std::move(m));
     }
@@ -81,6 +89,8 @@ void NasSm::handleUplinkDataRequest(int psi, OctetString &&data)
         {
             m_pduSessions[psi]->uplinkPending = true;
             handleUplinkStatusChange(psi, true);
+            m_logger->debug("UL data queued PSI[%d] bytes[%d] cm_state[%d]", psi, static_cast<int>(data.length()),
+                            static_cast<int>(m_mm->m_cmState));
         }
     }
 }

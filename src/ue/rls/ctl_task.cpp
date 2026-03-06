@@ -388,6 +388,15 @@ void RlsControlTask::handleUplinkRrcDelivery(int cellId, uint32_t pduId, rrc::Rr
 
 void RlsControlTask::handleUplinkDataDelivery(int psi, OctetString &&data)
 {
+    if (m_servingCell == 0)
+    {
+        m_logger->debug("UL data drop PSI[%d]: serving cell is unknown", psi);
+        return;
+    }
+
+    m_logger->debug("UL data RLS tx PSI[%d] bytes[%d] serving_cell[%d]", psi, static_cast<int>(data.length()),
+                    m_servingCell);
+
     rls::RlsPduTransmission msg{m_shCtx->sti};
     msg.pduType = rls::EPduType::DATA;
     msg.pdu = std::move(data);
@@ -432,7 +441,7 @@ void RlsControlTask::onAckSendTimerExpired()
 
     for (auto &item : copy)
     {
-        if (!item.second.empty())
+        if (item.second.empty())
             continue;
 
         rls::RlsPduTransmissionAck msg{m_shCtx->sti};

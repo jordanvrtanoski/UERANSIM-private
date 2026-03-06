@@ -151,6 +151,8 @@ void RlsControlTask::handleRlsMessage(int ueId, rls::RlsMessage &msg)
                 auto w = std::make_unique<NmGnbRlsToRls>(NmGnbRlsToRls::UPLINK_DATA);
                 w->ueId = ueId;
                 w->psi = static_cast<int>(m.payload);
+                m_logger->debug("UL data RLS rx UE[%d] PSI[%d] bytes[%d]", ueId, w->psi,
+                                static_cast<int>(m.pdu.length()));
                 w->data = std::move(m.pdu);
                 m_mainTask->push(std::move(w));
             }
@@ -266,7 +268,7 @@ void RlsControlTask::onAckSendTimerExpired()
 
     for (auto &item : copy)
     {
-        if (!item.second.empty())
+        if (item.second.empty())
             continue;
 
         rls::RlsPduTransmissionAck msg{m_sti};

@@ -196,6 +196,8 @@ void GtpTask::handleUplinkData(int ueId, int psi, OctetString &&pdu)
     }
 
     auto &pduSession = m_pduSessions[sessionInd];
+    m_logger->debug("UL data GTP tx UE[%d] PSI[%d] bytes[%d] teid[%u]", ueId, psi, static_cast<int>(pdu.length()),
+                    pduSession->upTunnel.teid);
 
     if (m_rateLimiter->allowUplinkPacket(sessionInd, static_cast<int64_t>(pdu.length())))
     {

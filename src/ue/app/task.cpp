@@ -109,9 +109,36 @@ static OctetString BuildIpv6RouterSolicitation(const uint8_t iid[8])
     return OctetString::FromArray(buf, sizeof(buf));
 }
 
+static std::string DescribeIpPacket(const OctetString &data)
+{
+    if (data.length() == 0)
+        return "len=0";
+
+    const auto *buf = data.data();
+    int ipVersion = (buf[0] >> 4) & 0xF;
+    std::string desc = "len=" + std::to_string(data.length()) + " ipver=" + std::to_string(ipVersion);
+
+    char src[INET6_ADDRSTRLEN] = {0};
+    char dst[INET6_ADDRSTRLEN] = {0};
+    if (ipVersion == 4 && data.length() >= 20)
+    {
+        inet_ntop(AF_INET, buf + 12, src, sizeof(src));
+        inet_ntop(AF_INET, buf + 16, dst, sizeof(dst));
+        desc += " src=" + std::string(src) + " dst=" + std::string(dst);
+    }
+    else if (ipVersion == 6 && data.length() >= 40)
+    {
+        inet_ntop(AF_INET6, buf + 8, src, sizeof(src));
+        inet_ntop(AF_INET6, buf + 24, dst, sizeof(dst));
+        desc += " src=" + std::string(src) + " dst=" + std::string(dst);
+    }
+    return desc;
+}
+
 UeAppTask::UeAppTask(TaskBase *base) : m_base{base}
 {
     m_logger = m_base->logBase->makeUniqueLogger(m_base->config->getLoggerPrefix() + "app");
+    m_sessionTypes.fill(nas::EPduSessionType::UNSTRUCTURED);
 }
 
 void UeAppTask::onStart()
@@ -144,6 +171,7 @@ void UeAppTask::onLoop()
         switch (w.present)
         {
         case NmUeTunToApp::DATA_PDU_DELIVERY: {
+            m_logger->debug("UL packet from TUN psi[%d] %s", w.psi, DescribeIpPacket(w.data).c_str());
             auto m = std::make_unique<NmUeAppToNas>(NmUeAppToNas::UPLINK_DATA_DELIVERY);
             m->psi = w.psi;
             m->data = std::move(w.data);
@@ -178,8 +206,18 @@ void UeAppTask::onLoop()
                         if (icmpType == 134 && !m_ipv6RaSeen[w.psi])
                         {
                             m_ipv6RaSeen[w.psi] = true;
-                            m_ipv6RsInjected[w.psi] = true;
-                            m_logger->info("IPv6 Router Advertisement received on PSI[%d], stopping RS retries", w.psi);
+                            m_logger->info("IPv6 Router Advertisement received on PSI[%d]", w.psi);
+                            if (isIpv6Ready(w.psi, true))
+                            {
+                                m_ipv6RsInjected[w.psi] = true;
+                                m_logger->info("IPv6 is ready on PSI[%d], stopping RS retries", w.psi);
+                            }
+                            else
+                            {
+                                m_logger->debug("IPv6 RA observed on PSI[%d], but address/route readiness is still pending",
+                                                w.psi);
+                                scheduleIpv6RouterSolicitation(w.psi, 0);
+                            }
                         }
                     }
                 }
@@ -247,6 +285,11 @@ void UeAppTask::receiveStatusUpdate(NmUeStatusUpdate &msg)
         m_ipv6RsInjected[msg.psi] = false;
         m_ipv6RsTimerArmed[msg.psi] = false;
         m_ipv6RsAttemptsRemaining[msg.psi] = 0;
+        m_ipv6RsRepeatUntilRa[msg.psi] = false;
+        m_ipv6RaSeen[msg.psi] = false;
+        m_ipv6ReadyLogged[msg.psi] = false;
+        m_sessionTypes[msg.psi] = nas::EPduSessionType::UNSTRUCTURED;
+        m_tunNames[msg.psi].clear();
 
         return;
     }
@@ -558,6 +601,9 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
 
     auto *task = new TunTask(m_base, psi, fd);
     m_tunTasks[psi] = task;
+    m_sessionTypes[psi] = sessionType;
+    m_tunNames[psi] = allocatedName;
+    m_ipv6ReadyLogged[psi] = false;
     task->start();
 
     // Trigger SLAAC/RA for IPv6-capable sessions (Open5GS sends IID in NAS and expects RS to trigger RA).
@@ -616,7 +662,7 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
 
         if (hasIid)
         {
-            bool repeatUntilRa = (sessionType == nas::EPduSessionType::IPV6);
+            bool repeatUntilRa = true;
             startIpv6RouterSolicitation(psi, iid, repeatUntilRa);
         }
         else
@@ -633,13 +679,13 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
     {
         if (!ipv6Address.empty())
         {
-            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s/%d] is up.",
+            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s/%d] is up. IPv6 route readiness pending.",
                            pduSession->psi, allocatedName.c_str(), ipv6Address.c_str(),
                            m_base->config->tunIpv6Prefix.value_or(64));
         }
         else
         {
-            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s] is up.",
+            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s] is up. IPv6 route readiness pending.",
                            pduSession->psi, allocatedName.c_str(), ipv6LinkLocal.c_str());
         }
     }
@@ -648,13 +694,13 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
         const char *ipv4Display = ipv4Address.empty() ? "none" : ipv4Address.c_str();
         if (!ipv6Address.empty())
         {
-            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s, %s/%d] is up.",
+            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s, %s/%d] is up. IPv6 route readiness pending.",
                            pduSession->psi, allocatedName.c_str(), ipv4Display, ipv6Address.c_str(),
                            m_base->config->tunIpv6Prefix.value_or(64));
         }
         else
         {
-            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s, %s] is up.",
+            m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s, %s] is up. IPv6 route readiness pending.",
                            pduSession->psi, allocatedName.c_str(), ipv4Display, ipv6LinkLocal.c_str());
         }
     }
@@ -700,11 +746,22 @@ void UeAppTask::trySendIpv6RouterSolicitation(int psi)
     if (m_ipv6RsInjected[psi])
         return;
 
+    if (isIpv6Ready(psi, true))
+    {
+        m_ipv6RsInjected[psi] = true;
+        return;
+    }
+
     if (m_ipv6RsAttemptsRemaining[psi] == 0)
     {
         if (m_ipv6RsRepeatUntilRa[psi] && !m_ipv6RaSeen[psi])
         {
             m_logger->debug("IPv6 RS: no RA yet for PSI[%d], continuing retries", psi);
+            m_ipv6RsAttemptsRemaining[psi] = 1;
+        }
+        else if (m_ipv6RsRepeatUntilRa[psi] && m_ipv6RaSeen[psi])
+        {
+            m_logger->debug("IPv6 RS: RA seen on PSI[%d], but interface is not ready yet; continuing retries", psi);
             m_ipv6RsAttemptsRemaining[psi] = 1;
         }
         else
@@ -733,13 +790,44 @@ void UeAppTask::trySendIpv6RouterSolicitation(int psi)
     m_base->nasTask->push(std::move(m));
 
     m_ipv6RsAttemptsRemaining[psi]--;
-    if (m_ipv6RsAttemptsRemaining[psi] == 0)
-        m_ipv6RsInjected[psi] = true;
-    else
+    int delayMs = m_base->config->ipv6RsRetryPeriodMs.value_or(DEFAULT_IPV6_RS_RETRY_PERIOD_MS);
+    scheduleIpv6RouterSolicitation(psi, delayMs);
+}
+
+bool UeAppTask::isIpv6Ready(int psi, bool logState)
+{
+    if (psi <= 0 || psi > 15)
+        return false;
+    if (m_tunNames[psi].empty())
+        return false;
+    if (m_sessionTypes[psi] != nas::EPduSessionType::IPV6 && m_sessionTypes[psi] != nas::EPduSessionType::IPV4V6)
+        return false;
+
+    bool hasGlobalAddress = false;
+    bool hasDefaultRoute = false;
+    std::string error;
+    if (!tun::TunQueryIpv6Status(m_tunNames[psi], hasGlobalAddress, hasDefaultRoute, error))
     {
-        int delayMs = m_base->config->ipv6RsRetryPeriodMs.value_or(DEFAULT_IPV6_RS_RETRY_PERIOD_MS);
-        scheduleIpv6RouterSolicitation(psi, delayMs);
+        if (logState)
+            m_logger->warn("IPv6 readiness probe failed for PSI[%d] interface[%s]: %s", psi, m_tunNames[psi].c_str(),
+                           error.c_str());
+        return false;
     }
+
+    bool ready = hasGlobalAddress && hasDefaultRoute;
+    if (ready && !m_ipv6ReadyLogged[psi])
+    {
+        m_logger->info("IPv6 readiness achieved on PSI[%d] interface[%s]: global address and default route present", psi,
+                       m_tunNames[psi].c_str());
+        m_ipv6ReadyLogged[psi] = true;
+    }
+    else if (!ready && logState)
+    {
+        m_logger->debug("IPv6 readiness pending on PSI[%d] interface[%s]: global_address[%s] default_route[%s]", psi,
+                        m_tunNames[psi].c_str(), hasGlobalAddress ? "yes" : "no", hasDefaultRoute ? "yes" : "no");
+    }
+
+    return ready;
 }
 
 } // namespace nr::ue

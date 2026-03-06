@@ -17,5 +17,6 @@ int TunAllocate(const char *namePrefix, std::string &allocatedName, std::string 
 bool TunConfigure(const std::string &tunName, const std::string &ipAddress, const std::string &netmask, int mtu, bool configureRouting, std::string &error);
 bool TunConfigure6(const std::string &tunName, const std::string &ipv6Address, int ipv6Prefix, int mtu, bool configureRouting,
                    std::string &error);
+bool TunQueryIpv6Status(const std::string &tunName, bool &hasGlobalAddress, bool &hasDefaultRoute, std::string &error);
 
 } // namespace nr::ue::tun

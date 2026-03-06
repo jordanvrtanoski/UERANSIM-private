@@ -33,6 +33,9 @@ class UeAppTask : public NtsTask
     std::array<uint8_t, 16> m_ipv6RsAttemptsRemaining{};
     std::array<bool, 16> m_ipv6RsRepeatUntilRa{};
     std::array<bool, 16> m_ipv6RaSeen{};
+    std::array<bool, 16> m_ipv6ReadyLogged{};
+    std::array<nas::EPduSessionType, 16> m_sessionTypes{};
+    std::array<std::string, 16> m_tunNames{};
     std::array<std::array<uint8_t, 8>, 16> m_ipv6RsIid{};
     ECmState m_cmState{};
 
@@ -53,6 +56,7 @@ class UeAppTask : public NtsTask
     void startIpv6RouterSolicitation(int psi, const uint8_t iid[8], bool repeatUntilRa);
     void scheduleIpv6RouterSolicitation(int psi, int delayMs);
     void trySendIpv6RouterSolicitation(int psi);
+    bool isIpv6Ready(int psi, bool logState);
 };
 
 } // namespace nr::ue

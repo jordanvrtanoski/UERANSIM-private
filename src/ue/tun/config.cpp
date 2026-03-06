@@ -190,6 +190,11 @@ static std::string VrfNameForInterface(const std::string &ifName)
     return vrf;
 }
 
+static bool OutputHasWord(const std::string &output, const std::string &word)
+{
+    return output.find(word) != std::string::npos;
+}
+
 static int VrfTableForInterface(const std::string &ifName)
 {
     // Derive a stable per-interface routing table ID without touching /etc/iproute2/rt_tables.
@@ -199,6 +204,65 @@ static int VrfTableForInterface(const std::string &ifName)
 
     // Pick a high range to avoid clashing with typical system tables.
     return 10000 + static_cast<int>(ifIndex);
+}
+
+static int RulePrefForVrf(int tableId, bool ipv6, bool sourceRule)
+{
+    // Keep a deterministic preference range to avoid colliding with built-in/main rules.
+    int base = sourceRule ? 18000 : 17000;
+    if (ipv6)
+        base += 500;
+    return base + (tableId % 400);
+}
+
+static void EnsureVrfPolicyRules(const std::string &ifName, int tableId)
+{
+    int pref4 = RulePrefForVrf(tableId, false, false);
+    int pref6 = RulePrefForVrf(tableId, true, false);
+
+    ExecBestEffort("ip -4 rule del pref " + std::to_string(pref4) + " oif " + ifName + " lookup " +
+                   std::to_string(tableId) + " 2>/dev/null");
+    ExecBestEffort("ip -4 rule add pref " + std::to_string(pref4) + " oif " + ifName + " lookup " +
+                   std::to_string(tableId));
+
+    ExecBestEffort("ip -6 rule del pref " + std::to_string(pref6) + " oif " + ifName + " lookup " +
+                   std::to_string(tableId) + " 2>/dev/null");
+    ExecBestEffort("ip -6 rule add pref " + std::to_string(pref6) + " oif " + ifName + " lookup " +
+                   std::to_string(tableId));
+}
+
+static std::set<std::string> ParseGlobalIpv6Addrs(const std::string &addrOutput)
+{
+    std::set<std::string> result{};
+    std::istringstream iss(addrOutput);
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        auto pos = line.find(" inet6 ");
+        if (pos == std::string::npos)
+            continue;
+        pos += 7;
+        auto slash = line.find('/', pos);
+        if (slash == std::string::npos || slash <= pos)
+            continue;
+        std::string addr = line.substr(pos, slash - pos);
+        if (!addr.empty())
+            result.insert(addr);
+    }
+    return result;
+}
+
+static void EnsureIpv6SourceRules(const std::string &ifName, int tableId, const std::string &addrOutput)
+{
+    int pref = RulePrefForVrf(tableId, true, true);
+    auto globalAddrs = ParseGlobalIpv6Addrs(addrOutput);
+    for (const auto &addr : globalAddrs)
+    {
+        ExecBestEffort("ip -6 rule del pref " + std::to_string(pref) + " from " + addr + "/128 lookup " +
+                       std::to_string(tableId) + " 2>/dev/null");
+        ExecBestEffort("ip -6 rule add pref " + std::to_string(pref) + " from " + addr + "/128 lookup " +
+                       std::to_string(tableId));
+    }
 }
 
 static void EnsureVrfAttached(const std::string &ifName, int tableId)
@@ -235,6 +299,9 @@ static void EnsureVrfAttached(const std::string &ifName, int tableId)
 
     // Attach the interface to the VRF. This keeps per-UE/PDU routes isolated from the host.
     ExecStrict("ip link set dev " + ifName + " master " + vrfName);
+
+    // Make output path deterministic for sockets bound to this interface/VRF.
+    EnsureVrfPolicyRules(ifName, tableId);
 }
 
 namespace nr::ue::tun
@@ -311,6 +378,7 @@ void ConfigureTun6(const char *tunName, const char *ipv6Addr, int ipv6Prefix, in
     ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".autoconf=1");
     ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".accept_ra=2");
     ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".accept_ra_defrtr=1");
+    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".use_tempaddr=0");
 
     if (!configureRoute)
         return;
@@ -318,6 +386,28 @@ void ConfigureTun6(const char *tunName, const char *ipv6Addr, int ipv6Prefix, in
     // Do not force an IPv6 default route here: Open5GS uses RS/RA to provide prefix + default router (SLAAC), and we
     // want the kernel-learned route inside the VRF table.
     ExecBestEffort("ip -6 route del default table " + std::to_string(vrfTable) + " 2>/dev/null");
+}
+
+void QueryIpv6Status(const char *tunName, bool &hasGlobalAddress, bool &hasDefaultRoute)
+{
+    const std::lock_guard<std::mutex> lock(configMutex);
+
+    hasGlobalAddress = false;
+    hasDefaultRoute = false;
+
+    int vrfTable = VrfTableForInterface(tunName);
+    std::string addrOutput;
+    if (ExecOutput(("ip -6 addr show dev " + std::string(tunName)).c_str(), addrOutput) == 0)
+    {
+        hasGlobalAddress = OutputHasWord(addrOutput, "scope global");
+        if (hasGlobalAddress)
+            EnsureIpv6SourceRules(tunName, vrfTable, addrOutput);
+    }
+
+    std::string routeOutput;
+    std::string vrfName = VrfNameForInterface(tunName);
+    if (ExecOutput(("ip -6 route show vrf " + vrfName).c_str(), routeOutput) == 0)
+        hasDefaultRoute = OutputHasWord(routeOutput, "default ");
 }
 
 } // namespace nr::ue::tun
