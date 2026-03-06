@@ -89,6 +89,18 @@ static std::string NciToHex(int64_t nci)
     return "0x" + utils::IntToHex(static_cast<uint64_t>(nci));
 }
 
+static uint32_t MakeHoTokenFromAmfUeNgapId(int64_t amfUeNgapId, uint32_t fallback)
+{
+    if (amfUeNgapId < 0)
+        return fallback;
+
+    uint64_t v = static_cast<uint64_t>(amfUeNgapId);
+    uint32_t token = static_cast<uint32_t>(v ^ (v >> 32));
+    if (token == 0)
+        token = fallback;
+    return token;
+}
+
 static int CellIdFromNci(int64_t nci, int gnbIdLength)
 {
     int cellBits = 36 - gnbIdLength;
@@ -231,7 +243,7 @@ std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &ta
         return std::nullopt;
     }
 
-    uint32_t token = ++m_ho1TokenCounter;
+    uint32_t token = MakeHoTokenFromAmfUeNgapId(ue->amfUeNgapId, ++m_ho1TokenCounter);
     Ho1SourceState st{};
     st.token = token;
     st.targetNci = targetNci;
@@ -379,7 +391,7 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     }
     asn::Free(asn_DEF_ASN_RRC_HandoverPreparationInformation, hpi);
 
-    uint32_t token = ++m_ho1TokenCounter;
+    uint32_t token = MakeHoTokenFromAmfUeNgapId(amfUeNgapId, ++m_ho1TokenCounter);
     int64_t ranUeNgapId = ++m_ueNgapIdCounter;
 
     Ho1TargetState st{};
