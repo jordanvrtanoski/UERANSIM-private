@@ -183,6 +183,15 @@ static void TunSetIpv6AndUp(const std::string &ifName, const std::string &ipv6Ad
 
 static std::string VrfNameForInterface(const std::string &ifName)
 {
+    // Design note:
+    // - PDU Session <-> Interface is 1:1
+    // - Interface <-> VRF is 1:1 (therefore VRF <-> PDU Session is 1:1)
+    //
+    // We intentionally isolate each PDU session into its own VRF table to avoid
+    // competing default routes and cross-session leakage (especially with IPv6 RA).
+    // If we later add QFI/bearer-level interfaces, they can still be attached under
+    // the same per-PDU policy model with explicit classifier/routing rules.
+
     // Keep within IFNAMSIZ (16 including NUL). UE tun names are <= 12 by config validation, so "vrf" + ifName fits.
     std::string vrf = "vrf" + ifName;
     if (vrf.size() >= IFNAMSIZ)
@@ -197,6 +206,7 @@ static bool OutputHasWord(const std::string &output, const std::string &word)
 
 static int VrfTableForInterface(const std::string &ifName)
 {
+    // Each interface gets a dedicated table, matching the 1:1 PDU-session VRF model above.
     // Derive a stable per-interface routing table ID without touching /etc/iproute2/rt_tables.
     unsigned ifIndex = if_nametoindex(ifName.c_str());
     if (ifIndex == 0)
@@ -217,6 +227,8 @@ static int RulePrefForVrf(int tableId, bool ipv6, bool sourceRule)
 
 static void EnsureVrfPolicyRules(const std::string &ifName, int tableId)
 {
+    // Keep explicit oif rules even with VRF attachment to make session egress deterministic.
+    // This protects multi-session behavior and avoids accidental fallback to main/default rules.
     int pref4 = RulePrefForVrf(tableId, false, false);
     int pref6 = RulePrefForVrf(tableId, true, false);
 
@@ -254,6 +266,8 @@ static std::set<std::string> ParseGlobalIpv6Addrs(const std::string &addrOutput)
 
 static void EnsureIpv6SourceRules(const std::string &ifName, int tableId, const std::string &addrOutput)
 {
+    // For IPv6, install per-source rules once a global address exists. This keeps packets
+    // sourced from a given PDU session inside that session's routing table.
     int pref = RulePrefForVrf(tableId, true, true);
     auto globalAddrs = ParseGlobalIpv6Addrs(addrOutput);
     for (const auto &addr : globalAddrs)
@@ -354,6 +368,11 @@ void ConfigureTun(const char *tunName, const char *ipAddr, const char *netmask, 
     EnsureVrfAttached(tunName, vrfTable);
 
     TunSetIpAndUp(tunName, ipAddr, netmask, mtu);
+
+    // For IPv4-only PDU sessions keep IPv6 disabled on this interface so it cannot
+    // emit RS/learn RA and accidentally participate in IPv6 source/route selection.
+    ExecBestEffort("sysctl -q -w net.ipv6.conf." + std::string(tunName) + ".disable_ipv6=1");
+
     if (configureRoute)
     {
         // Keep default route only inside VRF's table. Traffic uses it when explicitly bound to this interface (e.g.
