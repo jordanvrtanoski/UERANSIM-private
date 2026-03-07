@@ -11,6 +11,7 @@
 #include "utils.hpp"
 
 #include <memory>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -22,6 +23,15 @@
 
 namespace nr::gnb
 {
+
+struct GtpSessionSnapshot
+{
+    int psi{};
+    PduSessionType sessionType{PduSessionType::UNSTRUCTURED};
+    AggregateMaximumBitRate sessionAmbr{};
+    GtpTunnel upTunnel{};
+    std::vector<uint8_t> qfis{};
+};
 
 class GtpTask : public NtsTask
 {
@@ -40,6 +50,7 @@ class GtpTask : public NtsTask
   public:
     explicit GtpTask(TaskBase *base);
     ~GtpTask() override = default;
+    std::optional<GtpSessionSnapshot> getSessionSnapshot(int ueId, int psi) const;
 
   protected:
     void onStart() override;

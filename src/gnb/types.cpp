@@ -22,6 +22,19 @@ Json ToJson(const GnbStatusInfo &v)
 Json ToJson(const GnbConfig &v)
 {
     std::string nciHex = "0x" + utils::IntToHex(static_cast<uint64_t>(v.nci));
+    Json xnNeighbors = Json::Arr({});
+    for (const auto &peer : v.xnNeighbors)
+    {
+        Json item = Json::Obj({
+            {"name", peer.name},
+            {"address", peer.address},
+            {"port", peer.port},
+        });
+        if (peer.nci.has_value())
+            item.put("nci", *peer.nci);
+        xnNeighbors.push(std::move(item));
+    }
+
     Json json = Json::Obj({
         {"name", v.name},
         {"nci", v.nci},
@@ -32,6 +45,12 @@ Json ToJson(const GnbConfig &v)
         {"plmn", ToJson(v.plmn)},
         {"tac", v.tac},
         {"nssai", ToJson(v.nssai)},
+        {"handover-policy",
+         Json::Obj({
+             {"default-mode", ToJson(v.handoverPolicy.defaultMode)},
+             {"fallback-to-n2", v.handoverPolicy.fallbackToN2},
+             {"require-same-amf-for-xn", v.handoverPolicy.requireSameAmfForXn},
+         })},
         {"ngap-timers",
          Json::Obj({
              {"TNGRELOCprep", v.ngapTimers.tngRelocPrepMs},
@@ -41,6 +60,8 @@ Json ToJson(const GnbConfig &v)
          })},
         {"ngap-ip", v.ngapIp},
         {"gtp-ip", v.gtpIp},
+        {"xn-port", v.xnPort},
+        {"xn-neighbors", xnNeighbors},
         {"paging-drx", ToJson(v.pagingDrx)},
         {"ignore-sctp-id", v.ignoreStreamIds},
     });
@@ -95,6 +116,21 @@ Json ToJson(const EAmfState &v)
         return "WAITING_NG_SETUP";
     case EAmfState::CONNECTED:
         return "CONNECTED";
+    default:
+        return "?";
+    }
+}
+
+Json ToJson(const EHandoverMode &v)
+{
+    switch (v)
+    {
+    case EHandoverMode::AUTO:
+        return "auto";
+    case EHandoverMode::N2:
+        return "n2";
+    case EHandoverMode::XN:
+        return "xn";
     default:
         return "?";
     }

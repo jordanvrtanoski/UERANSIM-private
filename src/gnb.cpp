@@ -8,6 +8,8 @@
 
 #include <iostream>
 #include <stdexcept>
+#include <algorithm>
+#include <cctype>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -110,6 +112,40 @@ static nr::gnb::GnbConfig *ReadConfigYaml()
         }
     }
 
+    if (yaml::HasField(config, "xnPort"))
+        result->xnPort = static_cast<uint16_t>(yaml::GetInt32(config, "xnPort", 1024, 65535));
+
+    if (yaml::HasField(config, "xnNeighbors"))
+    {
+        std::unordered_set<std::string> seenNames{};
+        for (auto &n : yaml::GetSequence(config, "xnNeighbors"))
+        {
+            nr::gnb::GnbXnPeerConfig peer{};
+
+            if (yaml::HasField(n, "name"))
+                peer.name = yaml::GetString(n, "name");
+            if (yaml::HasField(n, "nci"))
+                peer.nci = yaml::GetInt64(n, "nci", 0, 0xFFFFFFFFFll);
+
+            if (peer.name.empty() && !peer.nci.has_value())
+                throw std::runtime_error(
+                    "Each 'xnNeighbors' entry must include at least one selector: 'name' or 'nci'.");
+
+            peer.address = yaml::GetIpAddress(n, "address");
+            peer.port = yaml::HasField(n, "port") ? static_cast<uint16_t>(yaml::GetInt32(n, "port", 1024, 65535))
+                                                  : result->xnPort;
+
+            if (peer.name.empty())
+                peer.name = "xn-peer-" + std::to_string(*peer.nci);
+
+            if (seenNames.count(peer.name))
+                throw std::runtime_error("Duplicate xnNeighbors.name value: '" + peer.name + "'");
+            seenNames.insert(peer.name);
+
+            result->xnNeighbors.push_back(std::move(peer));
+        }
+    }
+
     if (yaml::HasField(config, "ngapTimers"))
     {
         auto t = config["ngapTimers"];
@@ -142,6 +178,50 @@ static nr::gnb::GnbConfig *ReadConfigYaml()
             result->ngapTimers.preparedTtlMs = yaml::GetInt32(t, "preparedTtlMs", 1, 600000);
         if (yaml::HasField(t, "unmatchedCompleteTtlMs"))
             result->ngapTimers.unmatchedCompleteTtlMs = yaml::GetInt32(t, "unmatchedCompleteTtlMs", 1, 600000);
+    }
+
+    if (yaml::HasField(config, "handoverPolicy"))
+    {
+        auto hp = config["handoverPolicy"];
+
+        if (hp.Type() != YAML::NodeType::Map)
+            throw std::runtime_error("Field 'handoverPolicy' must be a map.");
+
+        static const std::unordered_set<std::string> kAllowedKeys = {
+            "defaultMode",
+            "fallbackToN2",
+            "requireSameAmfForXn",
+        };
+
+        for (const auto &kv : hp)
+        {
+            auto key = kv.first.as<std::string>();
+            if (!kAllowedKeys.count(key))
+                throw std::runtime_error("Field 'handoverPolicy' has unknown key '" + key +
+                                         "'. Allowed keys: defaultMode, fallbackToN2, requireSameAmfForXn.");
+        }
+
+        if (yaml::HasField(hp, "defaultMode"))
+        {
+            std::string mode = yaml::GetString(hp, "defaultMode");
+            std::transform(mode.begin(), mode.end(), mode.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+            if (mode == "auto")
+                result->handoverPolicy.defaultMode = nr::gnb::EHandoverMode::AUTO;
+            else if (mode == "n2")
+                result->handoverPolicy.defaultMode = nr::gnb::EHandoverMode::N2;
+            else if (mode == "xn")
+                result->handoverPolicy.defaultMode = nr::gnb::EHandoverMode::XN;
+            else
+                throw std::runtime_error("Field 'handoverPolicy.defaultMode' has invalid value '" + mode +
+                                         "'. Allowed values: auto, n2, xn.");
+        }
+
+        if (yaml::HasField(hp, "fallbackToN2"))
+            result->handoverPolicy.fallbackToN2 = yaml::GetBool(hp, "fallbackToN2");
+        if (yaml::HasField(hp, "requireSameAmfForXn"))
+            result->handoverPolicy.requireSameAmfForXn = yaml::GetBool(hp, "requireSameAmfForXn");
     }
 
     if (yaml::HasField(config, "security"))

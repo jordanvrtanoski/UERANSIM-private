@@ -20,6 +20,13 @@
 namespace app
 {
 
+enum class EHandoverMode
+{
+    AUTO = 0,
+    N2,
+    XN
+};
+
 struct GnbCliCommand
 {
     enum PR
@@ -34,6 +41,7 @@ struct GnbCliCommand
         HO_START,
         HO_STATUS,
         HO_CANCEL,
+        XN_PEERS,
     } present;
 
     // AMF_INFO
@@ -46,6 +54,7 @@ struct GnbCliCommand
     std::optional<int64_t> hoTargetNci{};
     std::optional<std::string> hoTargetName{};
     std::optional<int> hoTargetCellId{};
+    std::optional<EHandoverMode> hoMode{};
 
     explicit GnbCliCommand(PR present) : present(present)
     {

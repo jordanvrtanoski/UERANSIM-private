@@ -11,6 +11,7 @@
 #include <gnb/gtp/task.hpp>
 #include <gnb/ngap/task.hpp>
 #include <gnb/rrc/task.hpp>
+#include <gnb/xn/task.hpp>
 #include <utils/common.hpp>
 #include <utils/random.hpp>
 
@@ -83,8 +84,13 @@ void GnbRlsTask::onLoop()
         case NmGnbRlsToRls::UPLINK_PRIVATE: {
             auto m = std::make_unique<NmGnbRlsToNgap>(NmGnbRlsToNgap::PRIVATE_DATA_RX);
             m->ueId = w.ueId;
-            m->data = std::move(w.data);
+            m->data = w.data.copy();
             m_base->ngapTask->push(std::move(m));
+
+            auto mx = std::make_unique<NmGnbRlsToNgap>(NmGnbRlsToNgap::PRIVATE_DATA_RX);
+            mx->ueId = w.ueId;
+            mx->data = std::move(w.data);
+            m_base->xnTask->push(std::move(mx));
             break;
         }
         case NmGnbRlsToRls::UPLINK_RRC: {

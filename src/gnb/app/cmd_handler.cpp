@@ -14,6 +14,7 @@
 #include <gnb/rls/task.hpp>
 #include <gnb/rrc/task.hpp>
 #include <gnb/sctp/task.hpp>
+#include <gnb/xn/task.hpp>
 #include <utils/common.hpp>
 #include <utils/printer.hpp>
 
@@ -40,6 +41,7 @@ void GnbCmdHandler::pauseTasks()
     m_base->ngapTask->requestPause();
     m_base->rrcTask->requestPause();
     m_base->sctpTask->requestPause();
+    m_base->xnTask->requestPause();
 }
 
 void GnbCmdHandler::unpauseTasks()
@@ -49,6 +51,7 @@ void GnbCmdHandler::unpauseTasks()
     m_base->ngapTask->requestUnpause();
     m_base->rrcTask->requestUnpause();
     m_base->sctpTask->requestUnpause();
+    m_base->xnTask->requestUnpause();
 }
 
 bool GnbCmdHandler::isAllPaused()
@@ -62,6 +65,8 @@ bool GnbCmdHandler::isAllPaused()
     if (!m_base->rrcTask->isPauseConfirmed())
         return false;
     if (!m_base->sctpTask->isPauseConfirmed())
+        return false;
+    if (!m_base->xnTask->isPauseConfirmed())
         return false;
     return true;
 }
@@ -226,6 +231,81 @@ void GnbCmdHandler::handleCmdImpl(NmGnbCliCommand &msg)
             break;
         }
 
+        EHandoverMode requestedMode = m_base->config->handoverPolicy.defaultMode;
+        std::string modeSource = "config";
+        if (msg.cmd->hoMode.has_value())
+        {
+            modeSource = "cli";
+            switch (*msg.cmd->hoMode)
+            {
+            case app::EHandoverMode::AUTO:
+                requestedMode = EHandoverMode::AUTO;
+                break;
+            case app::EHandoverMode::N2:
+                requestedMode = EHandoverMode::N2;
+                break;
+            case app::EHandoverMode::XN:
+                requestedMode = EHandoverMode::XN;
+                break;
+            }
+        }
+
+        bool xnConfigured = m_base->xnTask->isPeerConfiguredForTarget(*target);
+        bool xnConnected = m_base->xnTask->isPeerConnectedForTarget(*target);
+        bool xnAvailable = xnConfigured && xnConnected;
+        bool sameAmfEligible = true;
+        EHandoverMode selectedMode = requestedMode;
+        std::string selectionReason = "explicit";
+
+        if (requestedMode == EHandoverMode::AUTO)
+        {
+            if (xnAvailable && sameAmfEligible)
+            {
+                selectedMode = EHandoverMode::XN;
+                selectionReason = "auto_xn_available";
+            }
+            else if (m_base->config->handoverPolicy.fallbackToN2)
+            {
+                selectedMode = EHandoverMode::N2;
+                if (!xnConfigured)
+                    selectionReason = "auto_xn_not_configured_fallback_n2";
+                else if (!xnConnected)
+                    selectionReason = "auto_xn_not_connected_fallback_n2";
+                else
+                    selectionReason = "auto_xn_not_eligible_fallback_n2";
+            }
+            else
+            {
+                sendError(msg.address, "Auto mode could not select Xn and fallbackToN2 is disabled");
+                break;
+            }
+        }
+
+        if (selectedMode == EHandoverMode::XN)
+        {
+            if (!xnConfigured)
+            {
+                sendError(msg.address, "Xn handover mode is selected but no matching xnNeighbor is configured");
+                break;
+            }
+            if (!xnAvailable)
+            {
+                sendError(msg.address, "Xn handover mode is selected but matching Xn peer is not connected/setup-complete");
+                break;
+            }
+            std::string xnError;
+            auto token = m_base->xnTask->startHandoverPreparation(msg.cmd->ueId, *target, xnError);
+            if (!token.has_value())
+            {
+                sendError(msg.address, "Xn handover start failed: " + xnError);
+                break;
+            }
+            sendResult(msg.address, "Xn handover preparation triggered (mode=xn, token=" + std::to_string(*token) +
+                                        ", target=" + target->name + ", mode-source=" + modeSource + ", reason=" +
+                                        selectionReason + ")");
+            break;
+        }
+
         auto token = m_base->ngapTask->startN2HandoverPhase1(msg.cmd->ueId, target->plmn, target->tac,
                                                              target->getGnbId(), target->gnbIdLength, target->nci,
                                                              target->name, target->linkIp);
@@ -235,8 +315,8 @@ void GnbCmdHandler::handleCmdImpl(NmGnbCliCommand &msg)
             break;
         }
 
-        sendResult(msg.address, "Handover triggered (token=" + std::to_string(*token) + ", target=" + target->name +
-                                    ")");
+        sendResult(msg.address, "Handover triggered (mode=n2, token=" + std::to_string(*token) + ", target=" +
+                                    target->name + ", mode-source=" + modeSource + ", reason=" + selectionReason + ")");
         break;
     }
     case app::GnbCliCommand::HO_STATUS: {
@@ -309,25 +389,131 @@ void GnbCmdHandler::handleCmdImpl(NmGnbCliCommand &msg)
         }
         json.put("target", tgt);
 
+        Json xnSrc = Json::Arr({});
+        for (const auto &it : m_base->xnTask->m_sourceHoByToken)
+        {
+            const auto &txn = it.second;
+            int64_t ageMs = nowMs - txn.startedAtMs;
+            std::string timerName = "none";
+            int64_t timerRemMs = 0;
+            if (txn.state == EXnHoTxnState::PREP_SENT)
+            {
+                timerName = "TXnRELOCprep";
+                timerRemMs = tPrep - ageMs;
+            }
+            else if (txn.state == EXnHoTxnState::ACK_RECEIVED || txn.state == EXnHoTxnState::SN_STATUS_SENT ||
+                     txn.state == EXnHoTxnState::CANCEL_SENT)
+            {
+                timerName = "TXnRELOCoverall";
+                timerRemMs = tOverall - ageMs;
+            }
+            if (timerRemMs < 0)
+                timerRemMs = 0;
+
+            Json o = Json::Obj({
+                {"token", txn.token},
+                {"ue-id", txn.ueId},
+                {"old-ue-xnap-id", txn.oldUeXnapId},
+                {"new-ue-xnap-id", txn.newUeXnapId},
+                {"state", ToJson(txn.state)},
+                {"sn-status-sent", txn.snStatusSent},
+                {"target-name", txn.targetName},
+                {"target-nci", txn.targetNci},
+                {"target-nci-hex", "0x" + utils::IntToHex(static_cast<uint64_t>(txn.targetNci))},
+                {"age-ms", ageMs},
+                {"timer-name", timerName},
+                {"timer-ms-remaining", timerRemMs},
+            });
+            if (!txn.failureReason.empty())
+                o.put("failure-reason", txn.failureReason);
+            xnSrc.push(std::move(o));
+        }
+        json.put("xn-source", xnSrc);
+
+        Json xnTgt = Json::Arr({});
+        for (const auto &it : m_base->xnTask->m_targetHoByToken)
+        {
+            const auto &txn = it.second;
+            int64_t ageMs = nowMs - txn.receivedAtMs;
+            int64_t ttlRemMs = tPreparedTtl - ageMs;
+            if (ttlRemMs < 0)
+                ttlRemMs = 0;
+            std::string state = "PREPARED";
+            if (txn.completeReceived && txn.contextReleaseSent)
+                state = "CONTEXT_RELEASE_SENT";
+            else if (txn.completeReceived)
+                state = "COMPLETE_RX";
+
+            xnTgt.push(Json::Obj({
+                {"token", txn.token},
+                {"ue-id", txn.ueId},
+                {"old-ue-xnap-id", txn.oldUeXnapId},
+                {"new-ue-xnap-id", txn.newUeXnapId},
+                {"state", state},
+                {"source-nci", txn.sourceNci},
+                {"source-nci-hex", "0x" + utils::IntToHex(static_cast<uint64_t>(txn.sourceNci))},
+                {"sn-status-received", txn.snStatusReceived},
+                {"complete-received", txn.completeReceived},
+                {"context-release-sent", txn.contextReleaseSent},
+                {"age-ms", ageMs},
+                {"timer-name", "prepared_ttl"},
+                {"timer-ms-remaining", ttlRemMs},
+            }));
+        }
+        json.put("xn-target", xnTgt);
+
         sendResult(msg.address, json.dumpYaml());
         break;
     }
     case app::GnbCliCommand::HO_CANCEL: {
-        if (m_base->ngapTask->m_ueCtx.count(msg.cmd->ueId) == 0)
+        if (m_base->ngapTask->m_ho1SourceByUe.count(msg.cmd->ueId))
         {
-            sendError(msg.address, "UE not found with given ID");
+            if (m_base->ngapTask->m_ueCtx.count(msg.cmd->ueId) == 0)
+            {
+                sendError(msg.address, "UE context missing for in-progress N2 handover");
+                break;
+            }
+
+            m_base->ngapTask->sendHandoverCancel(msg.cmd->ueId, NgapCause::RadioNetwork_handover_cancelled);
+            m_base->ngapTask->m_ho1SourceByUe.erase(msg.cmd->ueId);
+            sendResult(msg.address, "Handover cancel requested (mode=n2)");
             break;
         }
 
-        if (!m_base->ngapTask->m_ho1SourceByUe.count(msg.cmd->ueId))
+        std::string xnError;
+        auto token = m_base->xnTask->cancelHandoverPreparation(msg.cmd->ueId, xnError);
+        if (token.has_value())
         {
-            sendError(msg.address, "No in-progress handover found for this UE");
+            sendResult(msg.address, "Handover cancel requested (mode=xn, token=" + std::to_string(*token) + ")");
             break;
         }
 
-        m_base->ngapTask->sendHandoverCancel(msg.cmd->ueId, NgapCause::RadioNetwork_handover_cancelled);
-        m_base->ngapTask->m_ho1SourceByUe.erase(msg.cmd->ueId);
-        sendResult(msg.address, "Handover cancel requested");
+        sendError(msg.address, "No in-progress handover found for this UE" +
+                                   (xnError.empty() ? std::string{} : std::string(" (xn: ") + xnError + ")"));
+        break;
+    }
+    case app::GnbCliCommand::XN_PEERS: {
+        Json arr = Json::Arr({});
+        for (const auto &it : m_base->xnTask->m_peers)
+        {
+            const auto &peer = it.second;
+            Json item = Json::Obj({
+                {"name", peer.name},
+                {"client-id", peer.clientId},
+                {"state", ToJson(peer.state)},
+                {"setup-complete", peer.setupCompleted},
+                {"address", peer.address + ":" + std::to_string(peer.port)},
+            });
+            if (peer.nci.has_value())
+            {
+                item.put("nci", *peer.nci);
+                item.put("nci-hex", "0x" + utils::IntToHex(static_cast<uint64_t>(*peer.nci)));
+            }
+            if (peer.state == EXnPeerState::CONNECTED)
+                item.put("association", ToJson(peer.association));
+            arr.push(std::move(item));
+        }
+        sendResult(msg.address, arr.dumpYaml());
         break;
     }
     }

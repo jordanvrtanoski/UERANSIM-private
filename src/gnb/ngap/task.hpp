@@ -53,6 +53,32 @@ class GnbRrcTask;
 class GtpTask;
 class GnbAppTask;
 
+struct XnSourceUeSnapshot
+{
+    int64_t amfUeNgapId{-1};
+    int associatedAmfId{-1};
+    AggregateMaximumBitRate ueAmbr{};
+    std::vector<int> pduSessionIds{};
+};
+
+struct XnTargetPduSnapshot
+{
+    int psi{};
+    PduSessionType sessionType{PduSessionType::UNSTRUCTURED};
+    AggregateMaximumBitRate sessionAmbr{};
+    GtpTunnel upTunnel{};
+    std::vector<uint8_t> qfis{};
+};
+
+struct XnTargetPrepContext
+{
+    uint32_t token{};
+    int64_t amfUeNgapId{-1};
+    int sourceAssociatedAmfId{-1};
+    AggregateMaximumBitRate ueAmbr{};
+    std::vector<XnTargetPduSnapshot> pduSessions{};
+};
+
 class NgapTask : public NtsTask
 {
   private:
@@ -153,6 +179,9 @@ class NgapTask : public NtsTask
   public:
     explicit NgapTask(TaskBase *base);
     ~NgapTask() override = default;
+    void requestContextReleaseForXnHandover(int ueId, bool isSuccess);
+    bool getXnSourceUeSnapshot(int ueId, XnSourceUeSnapshot &snapshot, std::string &error) const;
+    bool prepareXnTargetHandover(const XnTargetPrepContext &context, std::string &error);
 
   protected:
     void onStart() override;

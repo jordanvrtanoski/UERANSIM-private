@@ -8,6 +8,8 @@
 
 #include "cli_cmd.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <optional>
 #include <sstream>
@@ -170,14 +172,16 @@ static opt::OptionsDescription DescForHoStart(const std::string &subCommand, con
                                        {},
                                        subCommand,
                                        {entry.usageText},
-                                       {"1 --target-nci 0x0000000010", "1 --target-name UERANSIM-gnb-999-1-2",
-                                        "1 --target-cell-id 16"},
+                                       {"1 --target-nci 0x0000000010 --mode auto",
+                                        "1 --target-name UERANSIM-gnb-999-1-2 --mode xn",
+                                        "1 --target-cell-id 16 --mode n2"},
                                        entry.helpIfEmpty,
                                        true};
 
     res.items.emplace_back(std::nullopt, "target-nci", "Target gNB NCI (hex or decimal)", "nci");
     res.items.emplace_back(std::nullopt, "target-name", "Target gNB neighbor name", "name");
     res.items.emplace_back(std::nullopt, "target-cell-id", "Target cell ID (as derived from NCI)", "cell-id");
+    res.items.emplace_back(std::nullopt, "mode", "Handover mode selection (auto|n2|xn)", "mode");
     return res;
 }
 
@@ -193,9 +197,11 @@ static OrderedMap<std::string, CmdEntry> g_gnbCmdEntries = {
     {"ue-count", {"Print the total number of UEs connected the this gNB", "", DefaultDesc, false}},
     {"ue-release", {"Request a UE context release for the given UE", "<ue-id>", DefaultDesc, false}},
     {"ho-start",
-     {"Trigger an N2-based handover (Phase 2: RRC-based)", "<ue-id> --target-... <value>", DescForHoStart, true}},
+     {"Trigger a handover (mode: auto|n2|xn)", "<ue-id> --target-... <value> [--mode <auto|n2|xn>]", DescForHoStart,
+      true}},
     {"ho-status", {"Show active handover state (debug)", "", DefaultDesc, false}},
     {"ho-cancel", {"Cancel an in-progress handover", "<ue-id>", DefaultDesc, true}},
+    {"xn-peers", {"Show configured Xn peers and SCTP states", "", DefaultDesc, false}},
 };
 
 static OrderedMap<std::string, CmdEntry> g_ueCmdEntries = {
@@ -297,6 +303,20 @@ static std::unique_ptr<GnbCliCommand> GnbCliParseImpl(const std::string &subCmd,
             cmd->hoTargetCellId = utils::ParseInt(getOpt("target-cell-id"));
             selectorCount++;
         }
+        if (hasOpt("mode"))
+        {
+            std::string mode = getOpt("mode");
+            std::transform(mode.begin(), mode.end(), mode.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (mode == "auto")
+                cmd->hoMode = EHandoverMode::AUTO;
+            else if (mode == "n2")
+                cmd->hoMode = EHandoverMode::N2;
+            else if (mode == "xn")
+                cmd->hoMode = EHandoverMode::XN;
+            else
+                CMD_ERR("Invalid --mode value, possible values are: auto, n2, xn")
+        }
 
         if (selectorCount == 0)
             CMD_ERR("Target selector is required: --target-nci, --target-name, or --target-cell-id")
@@ -320,6 +340,10 @@ static std::unique_ptr<GnbCliCommand> GnbCliParseImpl(const std::string &subCmd,
         if (cmd->ueId <= 0)
             CMD_ERR("Invalid UE ID")
         return cmd;
+    }
+    else if (subCmd == "xn-peers")
+    {
+        return std::make_unique<GnbCliCommand>(GnbCliCommand::XN_PEERS);
     }
 
     return nullptr;

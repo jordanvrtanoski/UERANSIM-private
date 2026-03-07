@@ -22,6 +22,53 @@ NgapTask::NgapTask(TaskBase *base) : m_base{base}, m_ueNgapIdCounter{}, m_downli
     m_logger = base->logBase->makeUniqueLogger("ngap");
 }
 
+void NgapTask::requestContextReleaseForXnHandover(int ueId, bool isSuccess)
+{
+    auto *ue = findUeContext(ueId);
+    if (!ue)
+    {
+        m_logger->warn("handover ho.role=source ho.xn.event=context_release_skip ho.ue_id=%d ho.reason=no_ue_context",
+                       ueId);
+        return;
+    }
+
+    NgapCause cause = isSuccess ? NgapCause::RadioNetwork_successful_handover
+                                : NgapCause::RadioNetwork_ho_failure_in_target_5GC_ngran_node_or_target_system;
+    sendContextRelease(ueId, cause);
+    m_logger->info("handover ho.role=source ho.xn.event=context_release_tx ho.ue_id=%d ho.success=%s", ueId,
+                   isSuccess ? "true" : "false");
+}
+
+bool NgapTask::getXnSourceUeSnapshot(int ueId, XnSourceUeSnapshot &snapshot, std::string &error) const
+{
+    error.clear();
+    auto it = m_ueCtx.find(ueId);
+    if (it == m_ueCtx.end() || !it->second)
+    {
+        error = "UE context not found";
+        return false;
+    }
+
+    const auto &ue = *it->second;
+    if (ue.associatedAmfId < 0 || ue.amfUeNgapId < 0)
+    {
+        error = "UE has no valid AMF association";
+        return false;
+    }
+    if (ue.pduSessions.empty())
+    {
+        error = "UE has no active PDU sessions";
+        return false;
+    }
+
+    snapshot = XnSourceUeSnapshot{};
+    snapshot.amfUeNgapId = ue.amfUeNgapId;
+    snapshot.associatedAmfId = ue.associatedAmfId;
+    snapshot.ueAmbr = ue.ueAmbr;
+    snapshot.pduSessionIds.assign(ue.pduSessions.begin(), ue.pduSessions.end());
+    return true;
+}
+
 void NgapTask::onStart()
 {
     for (auto &amfConfig : m_base->config->amfConfigs)

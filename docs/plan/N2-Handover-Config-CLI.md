@@ -33,7 +33,7 @@ neighbors:
     idLength: 32
     tac: 1
     mcc: '999'
-    mnc: '70'
+    mnc: '001'
 ```
 
 ### 2.2 Ambiguity rules
@@ -57,14 +57,49 @@ Notes:
 - These keys intentionally match the 3GPP timer names (`TNGRELOCprep`, `TNGRELOCoverall`).
 - Additional simulator-only TTLs may also exist (e.g. `preparedTtlMs`) but are not 3GPP timers.
 
+## 2.4 Handover Policy Configuration (Mode Selection)
+Handover mode policy is configurable in gNB YAML:
+
+```yaml
+handoverPolicy:
+  defaultMode: auto         # auto | n2 | xn
+  fallbackToN2: true        # used when auto resolves to unavailable xn
+  requireSameAmfForXn: true # xn eligibility gate (future xn execution path)
+```
+
+Current behavior:
+- `n2` is executable.
+- `xn` executes Xn HO preparation control-plane (request/ack/failure/cancel), UE move trigger, and target-side NGAP
+  `HandoverNotify + PathSwitchRequest`.
+- `auto` uses `defaultMode` and can fallback to N2 when configured.
+
+## 2.5 Xn Peer Transport Configuration (for mode eligibility/debug)
+Xn peer transport is configured in gNB YAML:
+
+```yaml
+xnPort: 38422
+xnNeighbors:
+  - name: gnb-t
+    nci: 0x000000020
+    address: 192.168.88.46
+    port: 38422
+```
+
+Current matching rules for mode selection:
+- target matches an Xn peer by `name` or `nci`.
+- Xn is considered available only when the matched peer is `CONNECTED` and `setup-complete`.
+- `xn-peers` CLI command prints configured peers and SCTP state.
+- `xn-peers` also exposes `setup-complete` from the current bootstrap Xn Setup exchange.
+
 ## 3. CLI Contract (Source gNB)
 ### 3.1 Commands
 Minimum command set:
-- `ho-start <ue-id> --target-nci <hex|dec>`
-- `ho-start <ue-id> --target-name <name>`
-- `ho-start <ue-id> --target-cell-id <cellId>`
+- `ho-start <ue-id> --target-nci <hex|dec> [--mode <auto|n2|xn>]`
+- `ho-start <ue-id> --target-name <name> [--mode <auto|n2|xn>]`
+- `ho-start <ue-id> --target-cell-id <cellId> [--mode <auto|n2|xn>]`
 - `ho-status`
 - `ho-cancel <ue-id>`
+- `xn-peers`
 
 ### 3.2 Target selection precedence
 Current Phase‑1 CLI requires **exactly one** target selector per `ho-start` (fail-fast if multiple are provided).
@@ -75,6 +110,10 @@ Current Phase‑1 CLI requires **exactly one** target selector per `ho-start` (f
 - UE already has an active HO in progress.
 - Target selector is missing or cannot be resolved.
 - Target resolves to the source itself (unless explicitly allowed for testing).
+- `--mode` is not one of `auto|n2|xn`.
+- `--mode xn` is requested but no matching `xnNeighbors` peer exists.
+- `--mode xn` is requested but matching peer is not connected/setup-complete.
+- `ho-cancel` is requested but there is no active source-side handover transaction in either N2 or Xn path.
 
 ### 3.4 Debug outputs
 `ho-status` should display at least:
@@ -82,6 +121,18 @@ Current Phase‑1 CLI requires **exactly one** target selector per `ho-start` (f
 - HO `state`, `token`
 - resolved target (`name`, `nci`, `rlsLinkIp` if used)
 - current timer status (remaining time for `TNGRELOCprep`/`TNGRELOCoverall` when active)
+- Xn preparation transactions (`xn-source`, `xn-target`) with token/state/failure reason where applicable
+- XnAP IDs for preparation path (`old-ue-xnap-id`, `new-ue-xnap-id`)
+- Bootstrap sequencing visibility (`sn-status-sent`, `sn-status-received`)
+- Target-side private completion visibility (`complete-received`, `context-release-sent`)
+
+`ho-start` command result should include selected mode metadata:
+- `mode-source` (`cli` or `config`)
+- `reason` (selection reason, e.g. auto fallback)
+
+`ho-cancel` command behavior:
+- if N2 source transaction exists, send NGAP Handover Cancel.
+- else if Xn source transaction exists, send Xn Handover Cancel and wait for cancel-ack.
 
 Optional: `ho-metrics` output listing counters described in `N2-Handover-Design.md`.
 

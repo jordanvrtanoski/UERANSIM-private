@@ -11,10 +11,12 @@
 #include "utils.hpp"
 
 #include <stdexcept>
+#include <unordered_set>
 
 #include <gnb/rls/task.hpp>
 #include <gnb/gtp/task.hpp>
 #include <gnb/rrc/task.hpp>
+#include <gnb/xn/task.hpp>
 #include <utils/common.hpp>
 
 #include <lib/rls/ho_phase1.hpp>
@@ -400,9 +402,13 @@ std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &ta
     {
         auto *tr = asn::New<ASN_NGAP_HandoverRequiredTransfer>();
         OctetString encodedTr = ngap_encode::EncodeS(asn_DEF_ASN_NGAP_HandoverRequiredTransfer, tr);
-        if (encodedTr.length() == 0)
-            throw std::runtime_error("HandoverRequiredTransfer encoding failed");
         asn::Free(asn_DEF_ASN_NGAP_HandoverRequiredTransfer, tr);
+        if (encodedTr.length() == 0)
+        {
+            m_logger->err("handover ho.role=source ho.ngap.event=ho_required_tx ho.ue_id=%d ho.fail_reason=encode_required_transfer",
+                          ueId);
+            return std::nullopt;
+        }
 
         auto *item = asn::New<ASN_NGAP_PDUSessionResourceItemHORqd>();
         item->pDUSessionID = psi;
@@ -428,6 +434,148 @@ std::optional<uint32_t> NgapTask::startN2HandoverPhase1(int ueId, const Plmn &ta
     sendNgapUeAssociated(ueId, pdu);
 
     return token;
+}
+
+bool NgapTask::prepareXnTargetHandover(const XnTargetPrepContext &context, std::string &error)
+{
+    error.clear();
+    if (context.token == 0)
+    {
+        error = "invalid_token";
+        return false;
+    }
+    if (context.amfUeNgapId < 0)
+    {
+        error = "invalid_amf_ue_ngap_id";
+        return false;
+    }
+    if (context.pduSessions.empty())
+    {
+        error = "no_pdu_sessions";
+        return false;
+    }
+    if (m_ho1TargetByToken.count(context.token))
+    {
+        error = "token_already_exists";
+        return false;
+    }
+
+    int selectedAmfId = -1;
+    if (context.sourceAssociatedAmfId >= 0)
+    {
+        auto amfIt = m_amfCtx.find(context.sourceAssociatedAmfId);
+        if (amfIt != m_amfCtx.end() && amfIt->second && amfIt->second->state == EAmfState::CONNECTED)
+            selectedAmfId = context.sourceAssociatedAmfId;
+    }
+
+    if (selectedAmfId < 0)
+    {
+        for (const auto &entry : m_amfCtx)
+        {
+            if (entry.second && entry.second->state == EAmfState::CONNECTED)
+            {
+                selectedAmfId = entry.first;
+                break;
+            }
+        }
+    }
+
+    if (selectedAmfId < 0)
+    {
+        error = "no_connected_amf";
+        return false;
+    }
+    if (context.sourceAssociatedAmfId >= 0 && selectedAmfId != context.sourceAssociatedAmfId)
+    {
+        m_logger->warn("handover ho.role=target ho.ngap.event=xn_prepare ho.token=%u ho.warn=source_amf_unavailable "
+                       "ho.source_amf_id=%d ho.selected_amf_id=%d",
+                       context.token, context.sourceAssociatedAmfId, selectedAmfId);
+    }
+
+    Ho1TargetState st{};
+    st.token = context.token;
+    st.ueId = 0;
+    st.ueSti = 0;
+    st.associatedAmfId = selectedAmfId;
+    st.stream = 0;
+    st.amfUeNgapId = context.amfUeNgapId;
+    st.ranUeNgapId = ++m_ueNgapIdCounter;
+    st.ueAmbr = context.ueAmbr;
+    st.preparedAtMs = utils::CurrentTimeMillis();
+    st.completeReceived = false;
+    st.pathSwitchSent = false;
+
+    std::unordered_set<int> seenPsi{};
+    for (const auto &session : context.pduSessions)
+    {
+        if (session.psi <= 0)
+        {
+            error = "invalid_psi";
+            return false;
+        }
+        if (seenPsi.count(session.psi))
+        {
+            error = "duplicate_psi";
+            return false;
+        }
+        if (session.sessionType != PduSessionType::IPv4 && session.sessionType != PduSessionType::IPv6 &&
+            session.sessionType != PduSessionType::IPv4v6)
+        {
+            error = "invalid_session_type";
+            return false;
+        }
+        if (session.upTunnel.teid == 0 || (session.upTunnel.address.length() != 4 && session.upTunnel.address.length() != 16))
+        {
+            error = "invalid_ul_tnl";
+            return false;
+        }
+        if (session.qfis.empty())
+        {
+            error = "empty_qfi_list";
+            return false;
+        }
+
+        HoPduInfo pi{};
+        pi.psi = session.psi;
+        pi.sessionType = session.sessionType;
+        pi.sessionAmbr = session.sessionAmbr;
+        pi.upTunnel.teid = session.upTunnel.teid;
+        pi.upTunnel.address = session.upTunnel.address.copy();
+
+        std::string gtpIp = m_base->config->gtpAdvertiseIp.value_or(m_base->config->gtpIp);
+        pi.downTunnel.address = utils::IpToOctetString(gtpIp);
+        pi.downTunnel.teid = ++m_downlinkTeidCounter;
+
+        auto *qosList = asn::New<ASN_NGAP_QosFlowSetupRequestList>();
+        for (auto qfi : session.qfis)
+        {
+            if (qfi < 1 || qfi > 63)
+            {
+                asn::Free(asn_DEF_ASN_NGAP_QosFlowSetupRequestList, qosList);
+                error = "invalid_qfi";
+                return false;
+            }
+            auto *item = asn::New<ASN_NGAP_QosFlowSetupRequestItem>();
+            item->qosFlowIdentifier = qfi;
+            asn::SequenceAdd(*qosList, item);
+            pi.qfis.push_back(qfi);
+        }
+        pi.qosFlows = asn::WrapUnique(qosList, asn_DEF_ASN_NGAP_QosFlowSetupRequestList);
+
+        st.pduInfos.push_back(std::move(pi));
+        seenPsi.insert(session.psi);
+    }
+
+    if (st.pduInfos.empty())
+    {
+        error = "no_valid_pdu_sessions";
+        return false;
+    }
+
+    m_ho1TargetByToken[context.token] = std::move(st);
+    m_logger->info("handover ho.role=target ho.ngap.event=xn_prepare ho.token=%u ho.amf_ue_ngap_id=%ld ho.pdu_count=%d",
+                   context.token, context.amfUeNgapId, static_cast<int>(context.pduSessions.size()));
+    return true;
 }
 
 void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_HandoverRequest *msg)
@@ -645,9 +793,14 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
 
                 OctetString encodedTr =
                     ngap_encode::EncodeS(asn_DEF_ASN_NGAP_HandoverResourceAllocationUnsuccessfulTransfer, tr);
-                if (encodedTr.length() == 0)
-                    throw std::runtime_error("HandoverResourceAllocationUnsuccessfulTransfer encoding failed");
                 asn::Free(asn_DEF_ASN_NGAP_HandoverResourceAllocationUnsuccessfulTransfer, tr);
+                if (encodedTr.length() == 0)
+                {
+                    m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.token=%u ho.psi=%d "
+                                  "ho.fail_reason=encode_unsuccessful_transfer",
+                                  token, pi.psi);
+                    continue;
+                }
 
                 auto *fail = asn::New<ASN_NGAP_PDUSessionResourceFailedToSetupItemHOAck>();
                 fail->pDUSessionID = pi.psi;
@@ -689,9 +842,14 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
 
                 OctetString encodedTr =
                     ngap_encode::EncodeS(asn_DEF_ASN_NGAP_HandoverRequestAcknowledgeTransfer, tr);
-                if (encodedTr.length() == 0)
-                    throw std::runtime_error("HandoverRequestAcknowledgeTransfer encoding failed");
                 asn::Free(asn_DEF_ASN_NGAP_HandoverRequestAcknowledgeTransfer, tr);
+                if (encodedTr.length() == 0)
+                {
+                    m_logger->err("handover ho.role=target ho.ngap.event=ho_request_rx ho.token=%u ho.psi=%d "
+                                  "ho.fail_reason=encode_ack_transfer",
+                                  token, pi.psi);
+                    continue;
+                }
 
                 auto *adm = asn::New<ASN_NGAP_PDUSessionResourceAdmittedItem>();
                 adm->pDUSessionID = st.pduInfos.back().psi;
@@ -1037,14 +1195,19 @@ void NgapTask::receivePathSwitchRequestAcknowledge(int amfId, ASN_NGAP_PathSwitc
         }
     }
 
+    uint32_t token = 0;
     for (auto it = m_ho1TargetByToken.begin(); it != m_ho1TargetByToken.end(); ++it)
     {
         if (it->second.ueId == ue->ctxId)
         {
+            token = it->second.token;
             m_ho1TargetByToken.erase(it);
             break;
         }
     }
+
+    if (token != 0)
+        m_base->xnTask->onNgapPathSwitchResult(token, true, ue->ctxId);
 }
 
 void NgapTask::receivePathSwitchRequestFailure(int amfId, ASN_NGAP_PathSwitchRequestFailure *msg)
@@ -1082,14 +1245,19 @@ void NgapTask::receivePathSwitchRequestFailure(int amfId, ASN_NGAP_PathSwitchReq
         }
     }
 
+    uint32_t token = 0;
     for (auto it = m_ho1TargetByToken.begin(); it != m_ho1TargetByToken.end(); ++it)
     {
         if (it->second.ueId == ue->ctxId)
         {
+            token = it->second.token;
             m_ho1TargetByToken.erase(it);
             break;
         }
     }
+
+    if (token != 0)
+        m_base->xnTask->onNgapPathSwitchResult(token, false, ue->ctxId);
 }
 
 bool NgapTask::bindHandoverTargetUe(int ueId, Ho1TargetState &st)
@@ -1433,11 +1601,16 @@ void NgapTask::sendPathSwitchRequest(int ueId, const Ho1TargetState &st)
     if (!ue)
         return;
 
+    ASN_NGAP_UESecurityCapabilities syntheticCaps{};
     if (!st.ueSecurityCapabilities)
     {
-        m_logger->err("handover ho.role=target ho.event=path_switch_tx_fail ho.ue_id=%d ho.fail_reason=no_ue_security_caps",
-                      ueId);
-        return;
+        constexpr uint16_t kAlg0 = static_cast<uint16_t>(1u << 15);
+        asn::SetBitStringLong<16>(kAlg0, syntheticCaps.nRencryptionAlgorithms);
+        asn::SetBitStringLong<16>(kAlg0, syntheticCaps.nRintegrityProtectionAlgorithms);
+        asn::SetBitStringLong<16>(kAlg0, syntheticCaps.eUTRAencryptionAlgorithms);
+        asn::SetBitStringLong<16>(kAlg0, syntheticCaps.eUTRAintegrityProtectionAlgorithms);
+        m_logger->warn("handover ho.role=target ho.event=path_switch_tx ho.ue_id=%d ho.warn=synthetic_ue_security_caps",
+                       ueId);
     }
 
     std::vector<ASN_NGAP_PathSwitchRequestIEs *> ies;
@@ -1446,8 +1619,11 @@ void NgapTask::sendPathSwitchRequest(int ueId, const Ho1TargetState &st)
     ieCaps->id = ASN_NGAP_ProtocolIE_ID_id_UESecurityCapabilities;
     ieCaps->criticality = ASN_NGAP_Criticality_ignore;
     ieCaps->value.present = ASN_NGAP_PathSwitchRequestIEs__value_PR_UESecurityCapabilities;
-    asn::DeepCopy(asn_DEF_ASN_NGAP_UESecurityCapabilities, *st.ueSecurityCapabilities,
-                  &ieCaps->value.choice.UESecurityCapabilities);
+    if (st.ueSecurityCapabilities)
+        asn::DeepCopy(asn_DEF_ASN_NGAP_UESecurityCapabilities, *st.ueSecurityCapabilities,
+                      &ieCaps->value.choice.UESecurityCapabilities);
+    else
+        asn::DeepCopy(asn_DEF_ASN_NGAP_UESecurityCapabilities, syntheticCaps, &ieCaps->value.choice.UESecurityCapabilities);
     ies.push_back(ieCaps);
 
     auto *ieList = asn::New<ASN_NGAP_PathSwitchRequestIEs>();
@@ -1473,14 +1649,27 @@ void NgapTask::sendPathSwitchRequest(int ueId, const Ho1TargetState &st)
         }
 
         OctetString encodedTr = ngap_encode::EncodeS(asn_DEF_ASN_NGAP_PathSwitchRequestTransfer, tr);
-        if (encodedTr.length() == 0)
-            throw std::runtime_error("PathSwitchRequestTransfer encoding failed");
         asn::Free(asn_DEF_ASN_NGAP_PathSwitchRequestTransfer, tr);
+        if (encodedTr.length() == 0)
+        {
+            m_logger->err("handover ho.role=target ho.ngap.event=path_switch_tx ho.ue_id=%d ho.psi=%d "
+                          "ho.fail_reason=encode_transfer",
+                          ueId, pi.psi);
+            continue;
+        }
 
         auto *item = asn::New<ASN_NGAP_PDUSessionResourceToBeSwitchedDLItem>();
         item->pDUSessionID = pi.psi;
         asn::SetOctetString(item->pathSwitchRequestTransfer, encodedTr);
         asn::SequenceAdd(ieList->value.choice.PDUSessionResourceToBeSwitchedDLList, item);
+    }
+
+    if (ieList->value.choice.PDUSessionResourceToBeSwitchedDLList.list.count == 0)
+    {
+        asn::Free(asn_DEF_ASN_NGAP_PathSwitchRequestIEs, ieList);
+        m_logger->err("handover ho.role=target ho.ngap.event=path_switch_tx ho.ue_id=%d ho.fail_reason=empty_pdu_list",
+                      ueId);
+        return;
     }
 
     ies.push_back(ieList);

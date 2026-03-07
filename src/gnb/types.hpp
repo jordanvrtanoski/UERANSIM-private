@@ -30,6 +30,7 @@ class NgapTask;
 class GnbRrcTask;
 class GnbRlsTask;
 class SctpTask;
+class XnTask;
 
 enum class EAmfState
 {
@@ -321,6 +322,28 @@ struct GnbNeighborConfig
     }
 };
 
+struct GnbXnPeerConfig
+{
+    std::string name{};
+    std::optional<int64_t> nci{}; // 36-bit
+    std::string address{};
+    uint16_t port{};
+};
+
+enum class EHandoverMode
+{
+    AUTO = 0,
+    N2,
+    XN
+};
+
+struct HandoverPolicyConfig
+{
+    EHandoverMode defaultMode{EHandoverMode::AUTO};
+    bool fallbackToN2{true};
+    bool requireSameAmfForXn{true};
+};
+
 struct NgapTimerConfig
 {
     // 3GPP TS 38.413 timer names (configured in milliseconds)
@@ -342,6 +365,9 @@ struct GnbConfig
     NetworkSlice nssai{};
     std::vector<GnbAmfConfig> amfConfigs{};
     std::vector<GnbNeighborConfig> neighbors{};
+    uint16_t xnPort{38422};
+    std::vector<GnbXnPeerConfig> xnNeighbors{};
+    HandoverPolicyConfig handoverPolicy{};
     NgapTimerConfig ngapTimers{};
     std::string linkIp{};
     std::string ngapIp{};
@@ -381,6 +407,7 @@ struct TaskBase
     NgapTask *ngapTask{};
     GnbRrcTask *rrcTask{};
     SctpTask *sctpTask{};
+    XnTask *xnTask{};
     GnbRlsTask *rlsTask{};
 };
 
@@ -388,6 +415,7 @@ Json ToJson(const GnbStatusInfo &v);
 Json ToJson(const GnbConfig &v);
 Json ToJson(const NgapAmfContext &v);
 Json ToJson(const EAmfState &v);
+Json ToJson(const EHandoverMode &v);
 Json ToJson(const EPagingDrx &v);
 Json ToJson(const SctpAssociation &v);
 Json ToJson(const ServedGuami &v);

@@ -25,6 +25,31 @@ GtpTask::GtpTask(TaskBase *base)
     m_logger = m_base->logBase->makeUniqueLogger("gtp");
 }
 
+std::optional<GtpSessionSnapshot> GtpTask::getSessionSnapshot(int ueId, int psi) const
+{
+    uint64_t sessionInd = MakeSessionResInd(ueId, psi);
+    auto it = m_pduSessions.find(sessionInd);
+    if (it == m_pduSessions.end() || !it->second)
+        return std::nullopt;
+
+    const auto &session = *it->second;
+    GtpSessionSnapshot snapshot{};
+    snapshot.psi = session.psi;
+    snapshot.sessionType = session.sessionType;
+    snapshot.sessionAmbr = session.sessionAmbr;
+    snapshot.upTunnel.teid = session.upTunnel.teid;
+    snapshot.upTunnel.address = session.upTunnel.address.copy();
+
+    if (session.qosFlows)
+    {
+        auto &qosList = session.qosFlows->list;
+        for (int i = 0; i < qosList.count; i++)
+            snapshot.qfis.push_back(static_cast<uint8_t>(qosList.array[i]->qosFlowIdentifier));
+    }
+
+    return snapshot;
+}
+
 void GtpTask::onStart()
 {
     try

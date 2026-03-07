@@ -35,7 +35,7 @@ neighbors:
     idLength: 32
     tac: 1
     mcc: '999'
-    mnc: '70'
+    mnc: '001'
 ```
 
 Optional (for deterministic timer behavior in tests):
@@ -45,6 +45,24 @@ ngapTimers:
   TNGRELOCoverall: 15000
   preparedTtlMs: 15000
   unmatchedCompleteTtlMs: 5000
+```
+
+Optional (explicit handover mode policy for smoke tests):
+```yaml
+handoverPolicy:
+  defaultMode: n2
+  fallbackToN2: true
+  requireSameAmfForXn: true
+```
+
+Optional (Xn peer transport visibility for mode selection/debug):
+```yaml
+xnPort: 38422
+xnNeighbors:
+  - name: gnb-t
+    nci: 0x000000020
+    address: 127.0.0.2
+    port: 38422
 ```
 
 ### 2.3 UE (`config/ue-ho.yaml`)
@@ -79,7 +97,10 @@ Baseline acceptance:
 2) Connect to the **source gNB** node name:
    - `./build/nr-cli <source-node-name>`
 3) Find a UE id (`ue-list`) and trigger HO:
-   - `ho-start <ue-id> --target-name gnb-t`
+   - `ho-start <ue-id> --target-name gnb-t --mode n2`
+   - or `ho-start <ue-id> --target-name gnb-t --mode auto`
+   - `--mode xn` runs Xn preparation + UE move and target-side `HandoverNotify + PathSwitchRequest`.
+   - optional debug: `xn-peers`
 4) Observe state:
    - `ho-status`
 
@@ -100,4 +121,3 @@ Target gNB:
 
 Pass criterion (Phase‑1):
 - `ho-status` returns to idle/none for the UE, and logs show Path Switch ACK received on target.
-
