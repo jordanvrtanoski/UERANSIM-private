@@ -16,6 +16,7 @@
 #include <utils/constants.hpp>
 
 #include <arpa/inet.h>
+#include <cstdio>
 #include <cstring>
 
 static constexpr const int SWITCH_OFF_TIMER_ID = 1;
@@ -359,12 +360,21 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
     std::string error{}, allocatedName{};
     std::string requestedName = cons::TunNamePrefix;
     std::string requestedNetmask = cons::TunNetmask;
+    std::optional<std::string> requestedExactName{};
     if (m_base->config->tunName.has_value())
         requestedName = *m_base->config->tunName;
     if (m_base->config->tunNetmask.has_value())
         requestedNetmask = *m_base->config->tunNetmask;
-    
-    int fd = tun::TunAllocate(requestedName.c_str(), allocatedName, error);
+
+    if (m_base->config->ueTag.has_value())
+    {
+        char ifName[32] = {0};
+        std::snprintf(ifName, sizeof(ifName), "ut%04dp%02dq00", m_base->config->ueTag.value(), psi);
+        requestedExactName = std::string{ifName};
+    }
+
+    int fd = requestedExactName.has_value() ? tun::TunAllocateNamed(requestedExactName.value(), allocatedName, error)
+                                            : tun::TunAllocate(requestedName.c_str(), allocatedName, error);
     if (fd == 0 || error.length() > 0)
     {
         m_logger->err("TUN allocation failure [%s]", error.c_str());

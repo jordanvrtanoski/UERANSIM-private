@@ -16,6 +16,7 @@ namespace nr::ue::tun
 {
 
 int AllocateTun(const char *ifPrefix, char **allocatedName);
+int AllocateTunByName(const char *ifName, char **allocatedName);
 void ConfigureTun(const char *tunName, const char *ipAddr, const char *netmask, int mtu, bool configureRoute);
 void ConfigureTun6(const char *tunName, const char *ipv6Addr, int ipv6Prefix, int mtu, bool configureRoute);
 void QueryIpv6Status(const char *tunName, bool &hasGlobalAddress, bool &hasDefaultRoute);

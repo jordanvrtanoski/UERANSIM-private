@@ -32,6 +32,25 @@ int TunAllocate(const char *namePrefix, std::string &allocatedName, std::string 
     return fd;
 }
 
+int TunAllocateNamed(const std::string &ifName, std::string &allocatedName, std::string &error)
+{
+    int fd;
+    char *name = nullptr;
+    try
+    {
+        fd = tun::AllocateTunByName(ifName.c_str(), &name);
+        allocatedName = std::string{name};
+    }
+    catch (const LibError &e)
+    {
+        error = e.what();
+        allocatedName = "";
+        return 0;
+    }
+
+    return fd;
+}
+
 bool TunConfigure(const std::string &tunName, const std::string &ipAddress, const std::string &netmask, int mtu, bool configureRouting, std::string &error)
 {
     try

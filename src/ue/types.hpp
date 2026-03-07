@@ -113,6 +113,7 @@ struct UeConfig
     NetworkSlice configuredNssai{};
     std::optional<std::string> tunName{};
     std::optional<std::string> tunNetmask{};
+    std::optional<int> ueTag{};
     std::optional<int> tunIpv6Prefix{};
     std::optional<int> ipv6RsRetryCount{};
     std::optional<int> ipv6RsRetryPeriodMs{};

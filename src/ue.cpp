@@ -164,6 +164,8 @@ static nr::ue::UeConfig *ReadConfigYaml()
         result->tunName = yaml::GetString(config, "tunName", 1, 12);
     if (yaml::HasField(config, "tunNetmask"))
         result->tunNetmask = yaml::GetString(config, "tunNetmask", 9, 15);
+    if (yaml::HasField(config, "ueTag"))
+        result->ueTag = yaml::GetInt32(config, "ueTag", 0, 9999);
     if (yaml::HasField(config, "tunIpv6Prefix"))
         result->tunIpv6Prefix = yaml::GetInt32(config, "tunIpv6Prefix", 0, 128);
     if (yaml::HasField(config, "ipv6RsRetryCount"))
@@ -369,6 +371,7 @@ static nr::ue::UeConfig *GetConfigByUe(int ueIndex)
     c->routingIndicator = g_refConfig->routingIndicator;
     c->tunName = g_refConfig->tunName;
     c->tunNetmask = g_refConfig->tunNetmask;
+    c->ueTag = g_refConfig->ueTag;
     c->tunIpv6Prefix = g_refConfig->tunIpv6Prefix;
     c->ipv6RsRetryCount = g_refConfig->ipv6RsRetryCount;
     c->ipv6RsRetryPeriodMs = g_refConfig->ipv6RsRetryPeriodMs;
@@ -390,6 +393,14 @@ static nr::ue::UeConfig *GetConfigByUe(int ueIndex)
         IncrementNumber(*c->imei, ueIndex);
     if (c->imeiSv.has_value())
         IncrementNumber(*c->imeiSv, ueIndex);
+
+    if (c->ueTag.has_value())
+    {
+        int tag = c->ueTag.value() + ueIndex;
+        if (tag > 9999)
+            throw std::runtime_error("UE tag overflow: maximum supported value is 9999");
+        c->ueTag = tag;
+    }
 
     return c;
 }

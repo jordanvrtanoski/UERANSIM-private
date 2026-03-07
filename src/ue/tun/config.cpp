@@ -359,6 +359,42 @@ int AllocateTun(const char *ifPrefix, char **allocatedName)
     return fd;
 }
 
+int AllocateTunByName(const char *ifName, char **allocatedName)
+{
+    // acquire the configuration lock
+    const std::lock_guard<std::mutex> lock(configMutex);
+
+    if (!ifName || std::strlen(ifName) == 0 || std::strlen(ifName) >= IFNAMSIZ)
+        throw LibError("Invalid TUN interface name.", EINVAL);
+
+    char tunName[IFNAMSIZ];
+    std::strncpy(tunName, ifName, IFNAMSIZ);
+    tunName[IFNAMSIZ - 1] = '\0';
+
+    ifreq ifr{};
+    int fd;
+
+    if ((fd = open("/dev/net/tun", O_RDWR)) < 0)
+        throw LibError("Open failure /dev/net/tun");
+
+    std::memset(&ifr, 0, sizeof(ifr));
+    ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+    std::strncpy(ifr.ifr_name, tunName, IFNAMSIZ);
+
+    if (ioctl(fd, TUNSETIFF, (void *)&ifr) < 0)
+    {
+        close(fd);
+        throw LibError("ioctl(TUNSETIFF)", errno);
+    }
+
+    std::strcpy(tunName, ifr.ifr_name);
+    if (std::strcmp(tunName, ifName) != 0)
+        throw LibError("Requested TUN interface name is not available.");
+
+    *allocatedName = strdup(tunName);
+    return fd;
+}
+
 void ConfigureTun(const char *tunName, const char *ipAddr, const char *netmask, int mtu, bool configureRoute)
 {
     // acquire the configuration lock

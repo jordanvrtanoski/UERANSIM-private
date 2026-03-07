@@ -28,6 +28,10 @@ imeiSv: '4370816125816151'
 
 # Network mask used for the UE's TUN interface to define the subnet size
 tunNetmask: '255.255.255.0'
+# Optional deterministic UE tag [0..9999] used for interface naming:
+# TUN: ut<ueTag4>p<pdu2>q<qfi2> (currently qfi is fixed to 00)
+# VRF: vrf + TUN name
+ueTag: 1
 
 # List of gNB IP addresses for Radio Link Simulation
 gnbSearchList:
