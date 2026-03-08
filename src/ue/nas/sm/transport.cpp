@@ -67,8 +67,7 @@ void NasSm::sendSmMessage(int psi, const nas::SmMessage &msg)
     m.pduSessionId = nas::IEPduSessionIdentity2{};
     m.pduSessionId->value = psi;
 
-    if (msg.messageType == nas::EMessageType::PDU_SESSION_ESTABLISHMENT_REQUEST ||
-        msg.messageType == nas::EMessageType::PDU_SESSION_MODIFICATION_REQUEST)
+    if (msg.messageType == nas::EMessageType::PDU_SESSION_ESTABLISHMENT_REQUEST)
     {
         m.requestType = nas::IERequestType{};
         m.requestType->requestType =
@@ -83,6 +82,11 @@ void NasSm::sendSmMessage(int psi, const nas::SmMessage &msg)
                 m.dnn = nas::utils::DnnFromApn(*session->apn);
         }
     }
+    else if (msg.messageType == nas::EMessageType::PDU_SESSION_MODIFICATION_REQUEST)
+    {
+        m.requestType = nas::IERequestType{};
+        m.requestType->requestType = nas::ERequestType::MODIFICATION_REQUEST;
+    }
 
     m_mm->deliverUlTransport(m, MapMsgTypeToHint(msg.messageType));
 }
@@ -96,6 +100,12 @@ void NasSm::receiveSmMessage(const nas::SmMessage &msg)
         break;
     case nas::EMessageType::PDU_SESSION_ESTABLISHMENT_REJECT:
         receiveEstablishmentReject((const nas::PduSessionEstablishmentReject &)msg);
+        break;
+    case nas::EMessageType::PDU_SESSION_MODIFICATION_REJECT:
+        receiveModificationReject((const nas::PduSessionModificationReject &)msg);
+        break;
+    case nas::EMessageType::PDU_SESSION_MODIFICATION_COMMAND:
+        receiveModificationCommand((const nas::PduSessionModificationCommand &)msg);
         break;
     case nas::EMessageType::PDU_SESSION_RELEASE_REJECT:
         receiveReleaseReject((const nas::PduSessionReleaseReject &)msg);

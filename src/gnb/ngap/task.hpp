@@ -34,6 +34,7 @@ extern "C"
     struct ASN_NGAP_OverloadStart;
     struct ASN_NGAP_OverloadStop;
     struct ASN_NGAP_PDUSessionResourceReleaseCommand;
+    struct ASN_NGAP_PDUSessionResourceModifyRequest;
     struct ASN_NGAP_Paging;
     struct ASN_NGAP_HandoverRequired;
     struct ASN_NGAP_HandoverRequest;
@@ -234,6 +235,7 @@ class NgapTask : public NtsTask
 
     /* PDU session management */
     void receiveSessionResourceSetupRequest(int amfId, ASN_NGAP_PDUSessionResourceSetupRequest *msg);
+    void receiveSessionResourceModifyRequest(int amfId, ASN_NGAP_PDUSessionResourceModifyRequest *msg);
     void receiveSessionResourceReleaseCommand(int amfId, ASN_NGAP_PDUSessionResourceReleaseCommand *msg);
     std::optional<NgapCause> setupPduSessionResource(NgapUeContext *ue, PduSessionResource *resource);
 

@@ -63,6 +63,12 @@ void NasSm::abortProcedureByPti(int pti)
         freeProcedureTransactionId(pti);
         localReleaseSession(psi);
     }
+    else if (msgType == nas::EMessageType::PDU_SESSION_MODIFICATION_REQUEST)
+    {
+        freeProcedureTransactionId(pti);
+        if (m_pduSessions[psi]->psState == EPsState::MODIFICATION_PENDING)
+            m_pduSessions[psi]->psState = EPsState::ACTIVE;
+    }
 
     // todo: others
 }

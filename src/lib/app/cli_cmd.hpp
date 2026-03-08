@@ -69,6 +69,7 @@ struct UeCliCommand
         STATUS,
         TIMERS,
         PS_ESTABLISH,
+        PS_MODIFY,
         PS_RELEASE,
         PS_RELEASE_ALL,
         PS_LIST,
@@ -89,6 +90,12 @@ struct UeCliCommand
     std::optional<SingleSlice> sNssai{};
     std::optional<std::string> apn{};
     bool isEmergency{};
+
+    // PS_MODIFY
+    int psId{};
+    std::optional<std::string> psModifyQosRules{};
+    std::optional<std::string> psModifyQosFlows{};
+    std::optional<int> psModifySmCause{};
 
     explicit UeCliCommand(PR present) : present(present)
     {

@@ -79,6 +79,13 @@ class NasSm
     void receiveReleaseReject(const nas::PduSessionReleaseReject &msg);
     void receiveReleaseCommand(const nas::PduSessionReleaseCommand &msg);
 
+  private: /* Session Modification */
+    void sendModificationRequest(int psi, const std::optional<nas::IEQoSRules> &requestedQosRules,
+                                 const std::optional<nas::IEQoSFlowDescriptions> &requestedQosFlows,
+                                 const std::optional<nas::IE5gSmCause> &smCause);
+    void receiveModificationReject(const nas::PduSessionModificationReject &msg);
+    void receiveModificationCommand(const nas::PduSessionModificationCommand &msg);
+
   private: /* Timer */
     std::unique_ptr<UeTimer> newTransactionTimer(int code);
     void onTimerExpire(UeTimer &timer);

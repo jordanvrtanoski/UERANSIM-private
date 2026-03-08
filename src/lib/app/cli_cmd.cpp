@@ -164,6 +164,28 @@ static opt::OptionsDescription DescForPsEstablish(const std::string &subCommand,
     return res;
 }
 
+static opt::OptionsDescription DescForPsModify(const std::string &subCommand, const CmdEntry &entry)
+{
+    auto res = opt::OptionsDescription{{},
+                                       {},
+                                       entry.descriptionText,
+                                       {},
+                                       subCommand,
+                                       {entry.usageText},
+                                       {"1 --qos-rules 010300020140",
+                                        "1 --qos-flows 2109060401010101090901",
+                                        "1 --qos-rules 010300020140 --qos-flows 2109060401010101090901"},
+                                       entry.helpIfEmpty,
+                                       true};
+
+    res.items.emplace_back(std::nullopt, "qos-rules", "Requested QoS rules IE payload (hex, no spaces)", "hex");
+    res.items.emplace_back(std::nullopt, "qos-flows",
+                           "Requested QoS flow descriptions IE payload (hex, no spaces)", "hex");
+    res.items.emplace_back(std::nullopt, "sm-cause", "5GSM cause value (0..255)", "value");
+
+    return res;
+}
+
 static opt::OptionsDescription DescForHoStart(const std::string &subCommand, const CmdEntry &entry)
 {
     auto res = opt::OptionsDescription{{},
@@ -212,6 +234,8 @@ static OrderedMap<std::string, CmdEntry> g_ueCmdEntries = {
     {"coverage", {"Dump available cells and PLMNs in the coverage", "", DefaultDesc, false}},
     {"ps-establish",
      {"Trigger a PDU session establishment procedure", "<IPv4|IPv6|IPv4v6> [options]", DescForPsEstablish, true}},
+    {"ps-modify", {"Trigger a PDU session modification procedure", "<pdu-session-id> [options]", DescForPsModify,
+                   true}},
     {"ps-list", {"List all PDU sessions", "", DefaultDesc, false}},
     {"ps-release", {"Trigger a PDU session release procedure", "<pdu-session-id>...", DefaultDesc, true}},
     {"ps-release-all", {"Trigger PDU session release procedures for all active sessions", "", DefaultDesc, false}},
@@ -463,6 +487,62 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
                 cmd->sNssai->sd = octet3{n};
             }
         }
+        return cmd;
+    }
+    else if (subCmd == "ps-modify")
+    {
+        auto trim0x = [](const std::string &s) {
+            if (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+                return s.substr(2);
+            return s;
+        };
+        auto isValidHex = [](const std::string &value) {
+            if (value.empty() || (value.size() % 2) != 0)
+                return false;
+            return std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isxdigit(c) != 0; });
+        };
+
+        auto cmd = std::make_unique<UeCliCommand>(UeCliCommand::PS_MODIFY);
+        if (options.positionalCount() == 0)
+            CMD_ERR("PDU session ID is expected")
+        if (options.positionalCount() > 1)
+            CMD_ERR("Only one PDU session ID is expected")
+
+        int psi = 0;
+        if (!utils::TryParseInt(options.getPositional(0), psi) || psi <= 0 || psi > 15)
+            CMD_ERR("Invalid PDU session ID")
+        cmd->psId = psi;
+
+        if (options.hasFlag(std::nullopt, "qos-rules"))
+        {
+            auto hex = trim0x(options.getOption(std::nullopt, "qos-rules"));
+            if (!isValidHex(hex))
+                CMD_ERR("Invalid --qos-rules value, expected even-length hex string")
+            cmd->psModifyQosRules = hex;
+        }
+
+        if (options.hasFlag(std::nullopt, "qos-flows"))
+        {
+            auto hex = trim0x(options.getOption(std::nullopt, "qos-flows"));
+            if (!isValidHex(hex))
+                CMD_ERR("Invalid --qos-flows value, expected even-length hex string")
+            cmd->psModifyQosFlows = hex;
+        }
+
+        if (options.hasFlag(std::nullopt, "sm-cause"))
+        {
+            int cause = 0;
+            if (!utils::TryParseInt(options.getOption(std::nullopt, "sm-cause"), cause) || cause < 0 || cause > 255)
+                CMD_ERR("Invalid --sm-cause value, expected integer in range [0,255]")
+            cmd->psModifySmCause = cause;
+        }
+
+        if (!cmd->psModifyQosRules.has_value() && !cmd->psModifyQosFlows.has_value() &&
+            !cmd->psModifySmCause.has_value())
+        {
+            CMD_ERR("At least one option is required: --qos-rules, --qos-flows, or --sm-cause")
+        }
+
         return cmd;
     }
     else if (subCmd == "ps-list")

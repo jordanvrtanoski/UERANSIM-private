@@ -30,6 +30,7 @@ struct GtpSessionSnapshot
     PduSessionType sessionType{PduSessionType::UNSTRUCTURED};
     AggregateMaximumBitRate sessionAmbr{};
     GtpTunnel upTunnel{};
+    GtpTunnel downTunnel{};
     std::vector<uint8_t> qfis{};
 };
 
@@ -61,6 +62,7 @@ class GtpTask : public NtsTask
     void handleUdpReceive(const udp::NwUdpServerReceive &msg);
     void handleUeContextUpdate(const GtpUeContextUpdate &msg);
     void handleSessionCreate(PduSessionResource *session);
+    void handleSessionModify(PduSessionResource *session);
     void handleSessionRelease(int ueId, int psi);
     void handleUeContextDelete(int ueId);
     void handleUplinkData(int ueId, int psi, OctetString &&data);

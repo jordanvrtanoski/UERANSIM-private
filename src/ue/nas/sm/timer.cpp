@@ -67,6 +67,21 @@ void NasSm::onTransactionTimerExpire(int pti)
         }
         break;
     }
+    case 3581: {
+        if (pt.timer->getExpiryCount() < 5)
+        {
+            m_logger->warn("Retransmitting PDU Session Modification Request due to T3581 expiry");
+            sendSmMessage(pt.psi, *pt.message);
+
+            pt.timer->start(false);
+        }
+        else
+        {
+            m_logger->err("PDU Session Modification procedure failure, no response from the network after 5 attempts");
+            abortProcedureByPti(pti);
+        }
+        break;
+    }
     case 3582: {
         if (pt.timer->getExpiryCount() < 5)
         {

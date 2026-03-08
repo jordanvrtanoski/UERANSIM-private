@@ -8,11 +8,14 @@
 
 #include "cmd_handler.hpp"
 
+#include <exception>
+
 #include <ue/app/task.hpp>
 #include <ue/nas/task.hpp>
 #include <ue/rls/task.hpp>
 #include <ue/rrc/task.hpp>
 #include <ue/tun/task.hpp>
+#include <utils/octet_view.hpp>
 #include <utils/common.hpp>
 #include <utils/printer.hpp>
 
@@ -192,6 +195,39 @@ void UeCmdHandler::handleCmdImpl(NmUeCliCommand &msg)
         config.sNssai = msg.cmd->sNssai;
         m_base->nasTask->sm->sendEstablishmentRequest(config);
         sendResult(msg.address, "PDU session establishment procedure triggered");
+        break;
+    }
+    case app::UeCliCommand::PS_MODIFY: {
+        std::optional<nas::IEQoSRules> qosRules{};
+        std::optional<nas::IEQoSFlowDescriptions> qosFlows{};
+        std::optional<nas::IE5gSmCause> smCause{};
+
+        try
+        {
+            if (msg.cmd->psModifyQosRules.has_value())
+                qosRules = nas::IEQoSRules{OctetString::FromHex(*msg.cmd->psModifyQosRules)};
+
+            if (msg.cmd->psModifyQosFlows.has_value())
+            {
+                auto flowBytes = OctetString::FromHex(*msg.cmd->psModifyQosFlows);
+                OctetView view{flowBytes.data(), static_cast<size_t>(flowBytes.length())};
+                qosFlows = nas::IEQoSFlowDescriptions::Decode(view, static_cast<int>(flowBytes.length()));
+            }
+        }
+        catch (const std::exception &ex)
+        {
+            sendError(msg.address, std::string{"PDU session modification options are invalid: "} + ex.what());
+            break;
+        }
+
+        if (msg.cmd->psModifySmCause.has_value())
+        {
+            smCause = nas::IE5gSmCause{};
+            smCause->value = static_cast<nas::ESmCause>(*msg.cmd->psModifySmCause);
+        }
+
+        m_base->nasTask->sm->sendModificationRequest(msg.cmd->psId, qosRules, qosFlows, smCause);
+        sendResult(msg.address, "PDU session modification procedure triggered");
         break;
     }
     case app::UeCliCommand::PS_LIST: {

@@ -31,6 +31,7 @@
 #include <asn/ngap/ASN_NGAP_HandoverCancelAcknowledge.h>
 #include <asn/ngap/ASN_NGAP_PathSwitchRequestAcknowledge.h>
 #include <asn/ngap/ASN_NGAP_PathSwitchRequestFailure.h>
+#include <asn/ngap/ASN_NGAP_PDUSessionResourceModifyRequest.h>
 
 static e_ASN_NGAP_Criticality FindCriticalityOfUserIe(ASN_NGAP_NGAP_PDU *pdu, ASN_NGAP_ProtocolIE_ID_t ieId)
 {
@@ -353,6 +354,9 @@ void NgapTask::handleSctpMessage(int amfId, uint16_t stream, const UniqueBuffer 
             break;
         case ASN_NGAP_InitiatingMessage__value_PR_PDUSessionResourceSetupRequest:
             receiveSessionResourceSetupRequest(amf->ctxId, &value.choice.PDUSessionResourceSetupRequest);
+            break;
+        case ASN_NGAP_InitiatingMessage__value_PR_PDUSessionResourceModifyRequest:
+            receiveSessionResourceModifyRequest(amf->ctxId, &value.choice.PDUSessionResourceModifyRequest);
             break;
         case ASN_NGAP_InitiatingMessage__value_PR_DownlinkNASTransport:
             receiveDownlinkNasTransport(amf->ctxId, &value.choice.DownlinkNASTransport);
