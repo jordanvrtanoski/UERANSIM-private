@@ -172,15 +172,39 @@ static opt::OptionsDescription DescForPsModify(const std::string &subCommand, co
                                        {},
                                        subCommand,
                                        {entry.usageText},
-                                       {"1 --qos-rules 010300020140",
-                                        "1 --qos-flows 2109060401010101090901",
-                                        "1 --qos-rules 010300020140 --qos-flows 2109060401010101090901"},
+                                       {"1 --flow-op modify --flow-qfi 1 --flow-mode replace --flow-5qi 9",
+                                        "1 --flow-op delete --flow-qfi 1",
+                                        "1 --flow-op create --flow-qfi 0 --flow-5qi 9",
+                                        "1 --rule-op create --rule-id 0 --rule-qfi 0 --rule-precedence 100 --rule-dir ul",
+                                        "1 --flow-op create --flow-qfi 0 --flow-5qi 9 --rule-op create --rule-id 0 "
+                                        "--rule-qfi 0 --rule-precedence 100 --rule-dir ul",
+                                        "1 --qos-rules 010300020140"},
                                        entry.helpIfEmpty,
                                        true};
 
     res.items.emplace_back(std::nullopt, "qos-rules", "Requested QoS rules IE payload (hex, no spaces)", "hex");
     res.items.emplace_back(std::nullopt, "qos-flows",
                            "Requested QoS flow descriptions IE payload (hex, no spaces)", "hex");
+    res.items.emplace_back(std::nullopt, "flow-op",
+                           "Generate QoS flow description operation (modify|create|delete)", "op");
+    res.items.emplace_back(std::nullopt, "flow-qfi",
+                           "QFI list for --flow-op (comma-separated). Use 0 for create as per TS 24.501.", "list");
+    res.items.emplace_back(std::nullopt, "flow-mode",
+                           "Flow update mode for --flow-op modify (replace|extend), default: replace", "mode");
+    res.items.emplace_back(std::nullopt, "flow-5qi",
+                           "5QI parameter for generated flow description (required for create/modify)", "value");
+    res.items.emplace_back(std::nullopt, "rule-op",
+                           "Generate QoS rule operation (create|delete)", "op");
+    res.items.emplace_back(std::nullopt, "rule-id",
+                           "QoS Rule Identifier (QRI) for generated rule (0..255)", "value");
+    res.items.emplace_back(std::nullopt, "rule-qfi",
+                           "QFI in generated rule (0..63). For create with new flow, use 0.", "value");
+    res.items.emplace_back(std::nullopt, "rule-precedence",
+                           "QoS rule precedence (0..255 except 80) for rule create", "value");
+    res.items.emplace_back(std::nullopt, "rule-dir",
+                           "Packet filter direction for generated match-all rule (ul|dl|bi), default: bi", "dir");
+    res.items.emplace_back(std::nullopt, "rule-seg",
+                           "Segregation bit for rule create (on|off), default: on", "state");
     res.items.emplace_back(std::nullopt, "sm-cause", "5GSM cause value (0..255)", "value");
 
     return res;
@@ -491,6 +515,26 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
     }
     else if (subCmd == "ps-modify")
     {
+        auto parseQfiList = [](const std::string &input, std::vector<uint8_t> &output, bool allowZero) -> bool {
+            std::stringstream ss{input};
+            std::string token;
+            while (std::getline(ss, token, ','))
+            {
+                utils::Trim(token);
+                if (token.empty())
+                    return false;
+
+                int qfi = 0;
+                if (!utils::TryParseInt(token, qfi) || qfi < (allowZero ? 0 : 1) || qfi > 63)
+                    return false;
+
+                auto value = static_cast<uint8_t>(qfi);
+                if (std::find(output.begin(), output.end(), value) == output.end())
+                    output.push_back(value);
+            }
+            return !output.empty();
+        };
+
         auto trim0x = [](const std::string &s) {
             if (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
                 return s.substr(2);
@@ -529,6 +573,178 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
             cmd->psModifyQosFlows = hex;
         }
 
+        bool hasFlowOp = options.hasFlag(std::nullopt, "flow-op");
+        bool hasFlowQfi = options.hasFlag(std::nullopt, "flow-qfi");
+        if (hasFlowOp != hasFlowQfi)
+            CMD_ERR("Both --flow-op and --flow-qfi are required together")
+
+        if (!hasFlowOp && (options.hasFlag(std::nullopt, "flow-mode") || options.hasFlag(std::nullopt, "flow-5qi")))
+            CMD_ERR("--flow-mode and --flow-5qi can only be used together with --flow-op")
+
+        if (hasFlowOp && cmd->psModifyQosFlows.has_value())
+            CMD_ERR("Do not combine --qos-flows with --flow-op/--flow-qfi")
+
+        if (hasFlowOp)
+        {
+            std::string op = options.getOption(std::nullopt, "flow-op");
+            std::transform(op.begin(), op.end(), op.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+            bool allowQfiZero = false;
+            if (op == "modify")
+                cmd->psModifyFlowOp = nas::EQoSOperationCode::MODIFY_EXISTING;
+            else if (op == "create" || op == "add")
+            {
+                cmd->psModifyFlowOp = nas::EQoSOperationCode::CREATE_NEW;
+                allowQfiZero = true;
+            }
+            else if (op == "delete" || op == "remove")
+                cmd->psModifyFlowOp = nas::EQoSOperationCode::DELETE_EXISTING;
+            else
+                CMD_ERR("Invalid --flow-op value, possible values are: modify, create, delete")
+
+            if (!parseQfiList(options.getOption(std::nullopt, "flow-qfi"), cmd->psModifyFlowQfis, allowQfiZero))
+                CMD_ERR("Invalid --flow-qfi value, expected comma-separated QFI list in range [1,63], or 0 for create")
+
+            if (cmd->psModifyFlowOp == nas::EQoSOperationCode::CREATE_NEW)
+            {
+                if (cmd->psModifyFlowQfis.size() != 1 || cmd->psModifyFlowQfis[0] != 0)
+                    CMD_ERR("For --flow-op create, --flow-qfi must be exactly 0 per TS 24.501 (no QFI assigned)")
+            }
+            else
+            {
+                if (std::any_of(cmd->psModifyFlowQfis.begin(), cmd->psModifyFlowQfis.end(),
+                                [](uint8_t qfi) { return qfi == 0; }))
+                {
+                    CMD_ERR("QFI 0 is only allowed with --flow-op create")
+                }
+            }
+
+            if (options.hasFlag(std::nullopt, "flow-mode"))
+            {
+                std::string mode = options.getOption(std::nullopt, "flow-mode");
+                std::transform(mode.begin(), mode.end(), mode.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+                if (cmd->psModifyFlowOp != nas::EQoSOperationCode::MODIFY_EXISTING)
+                    CMD_ERR("--flow-mode is only valid with --flow-op modify")
+
+                if (mode == "replace")
+                    cmd->psModifyFlowReplacement = true;
+                else if (mode == "extend")
+                    cmd->psModifyFlowReplacement = false;
+                else
+                    CMD_ERR("Invalid --flow-mode value, possible values are: replace, extend")
+            }
+
+            if (options.hasFlag(std::nullopt, "flow-5qi"))
+            {
+                int v = 0;
+                if (!utils::TryParseInt(options.getOption(std::nullopt, "flow-5qi"), v) || v < 1 || v > 254)
+                    CMD_ERR("Invalid --flow-5qi value, expected integer in range [1,254]")
+                cmd->psModifyFlow5qi = static_cast<uint8_t>(v);
+            }
+
+            if (cmd->psModifyFlowOp == nas::EQoSOperationCode::CREATE_NEW ||
+                cmd->psModifyFlowOp == nas::EQoSOperationCode::MODIFY_EXISTING)
+            {
+                if (!cmd->psModifyFlow5qi.has_value())
+                    CMD_ERR("TS 24.501 requires non-empty parameters for create/modify QoS flow; provide --flow-5qi")
+            }
+        }
+
+        bool hasRuleOp = options.hasFlag(std::nullopt, "rule-op");
+        bool hasRuleId = options.hasFlag(std::nullopt, "rule-id");
+
+        bool hasRuleFields = hasRuleOp || hasRuleId || options.hasFlag(std::nullopt, "rule-qfi") ||
+                             options.hasFlag(std::nullopt, "rule-precedence") ||
+                             options.hasFlag(std::nullopt, "rule-dir") || options.hasFlag(std::nullopt, "rule-seg");
+
+        if (hasRuleFields && cmd->psModifyQosRules.has_value())
+            CMD_ERR("Do not combine --qos-rules with generated --rule-* options")
+
+        if (hasRuleFields && !hasRuleOp)
+            CMD_ERR("--rule-op is required when using any --rule-* option")
+
+        if (hasRuleOp != hasRuleId)
+            CMD_ERR("Both --rule-op and --rule-id are required together")
+
+        if (hasRuleOp)
+        {
+            std::string op = options.getOption(std::nullopt, "rule-op");
+            std::transform(op.begin(), op.end(), op.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+            if (op == "create" || op == "add")
+                cmd->psModifyRuleOp = EQoSRuleOperationCode::CREATE_NEW;
+            else if (op == "delete" || op == "remove")
+                cmd->psModifyRuleOp = EQoSRuleOperationCode::DELETE_EXISTING;
+            else
+                CMD_ERR("Invalid --rule-op value, possible values are: create, delete")
+
+            int ruleId = 0;
+            if (!utils::TryParseInt(options.getOption(std::nullopt, "rule-id"), ruleId) || ruleId < 0 || ruleId > 255)
+                CMD_ERR("Invalid --rule-id value, expected integer in range [0,255]")
+            cmd->psModifyRuleId = static_cast<uint8_t>(ruleId);
+
+            if (*cmd->psModifyRuleOp == EQoSRuleOperationCode::CREATE_NEW)
+            {
+                if (!options.hasFlag(std::nullopt, "rule-precedence"))
+                    CMD_ERR("--rule-precedence is required with --rule-op create")
+                if (!options.hasFlag(std::nullopt, "rule-qfi"))
+                    CMD_ERR("--rule-qfi is required with --rule-op create")
+
+                int precedence = 0;
+                if (!utils::TryParseInt(options.getOption(std::nullopt, "rule-precedence"), precedence) || precedence < 0 ||
+                    precedence > 255 || precedence == 80)
+                {
+                    CMD_ERR("Invalid --rule-precedence value, expected integer in range [0,255] except 80")
+                }
+                cmd->psModifyRulePrecedence = static_cast<uint8_t>(precedence);
+
+                int qfi = 0;
+                if (!utils::TryParseInt(options.getOption(std::nullopt, "rule-qfi"), qfi) || qfi < 0 || qfi > 63)
+                    CMD_ERR("Invalid --rule-qfi value, expected integer in range [0,63]")
+                cmd->psModifyRuleQfi = static_cast<uint8_t>(qfi);
+
+                cmd->psModifyRuleSegregation = true;
+                if (options.hasFlag(std::nullopt, "rule-seg"))
+                {
+                    std::string seg = options.getOption(std::nullopt, "rule-seg");
+                    std::transform(seg.begin(), seg.end(), seg.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (seg == "on" || seg == "true" || seg == "1")
+                        cmd->psModifyRuleSegregation = true;
+                    else if (seg == "off" || seg == "false" || seg == "0")
+                        cmd->psModifyRuleSegregation = false;
+                    else
+                        CMD_ERR("Invalid --rule-seg value, possible values are: on, off")
+                }
+
+                cmd->psModifyRuleDirection = EQoSRuleDirection::BIDIRECTIONAL;
+                if (options.hasFlag(std::nullopt, "rule-dir"))
+                {
+                    std::string dir = options.getOption(std::nullopt, "rule-dir");
+                    std::transform(dir.begin(), dir.end(), dir.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (dir == "ul" || dir == "uplink")
+                        cmd->psModifyRuleDirection = EQoSRuleDirection::UPLINK;
+                    else if (dir == "dl" || dir == "downlink")
+                        cmd->psModifyRuleDirection = EQoSRuleDirection::DOWNLINK;
+                    else if (dir == "bi" || dir == "bidirectional")
+                        cmd->psModifyRuleDirection = EQoSRuleDirection::BIDIRECTIONAL;
+                    else
+                        CMD_ERR("Invalid --rule-dir value, possible values are: ul, dl, bi")
+                }
+            }
+            else
+            {
+                if (options.hasFlag(std::nullopt, "rule-qfi") || options.hasFlag(std::nullopt, "rule-precedence") ||
+                    options.hasFlag(std::nullopt, "rule-dir") || options.hasFlag(std::nullopt, "rule-seg"))
+                {
+                    CMD_ERR("--rule-qfi, --rule-precedence, --rule-dir, and --rule-seg are only valid with --rule-op create")
+                }
+            }
+        }
+
         if (options.hasFlag(std::nullopt, "sm-cause"))
         {
             int cause = 0;
@@ -537,10 +753,17 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
             cmd->psModifySmCause = cause;
         }
 
-        if (!cmd->psModifyQosRules.has_value() && !cmd->psModifyQosFlows.has_value() &&
-            !cmd->psModifySmCause.has_value())
+        if (!cmd->psModifyQosRules.has_value() && !cmd->psModifyQosFlows.has_value() && !cmd->psModifyFlowOp.has_value() &&
+            !cmd->psModifyRuleOp.has_value() && !cmd->psModifySmCause.has_value())
         {
-            CMD_ERR("At least one option is required: --qos-rules, --qos-flows, or --sm-cause")
+            CMD_ERR("At least one option is required: --qos-rules, --qos-flows, --flow-op/--flow-qfi, --rule-op/--rule-id, "
+                    "or --sm-cause")
+        }
+
+        if (cmd->psModifyFlowOp == nas::EQoSOperationCode::CREATE_NEW && cmd->psModifyRuleOp == EQoSRuleOperationCode::CREATE_NEW)
+        {
+            if (cmd->psModifyRuleQfi.value_or(1) != 0)
+                CMD_ERR("For combined create flow+rule, --rule-qfi must be 0 (no QFI assigned)")
         }
 
         return cmd;

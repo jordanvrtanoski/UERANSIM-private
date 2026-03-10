@@ -207,11 +207,89 @@ void UeCmdHandler::handleCmdImpl(NmUeCliCommand &msg)
             if (msg.cmd->psModifyQosRules.has_value())
                 qosRules = nas::IEQoSRules{OctetString::FromHex(*msg.cmd->psModifyQosRules)};
 
+            if (msg.cmd->psModifyRuleOp.has_value())
+            {
+                OctetString ruleBody{};
+
+                if (*msg.cmd->psModifyRuleOp == app::EQoSRuleOperationCode::CREATE_NEW)
+                {
+                    constexpr uint8_t kCreateOpCode = 0b001;
+                    constexpr uint8_t kDefaultQosRule = 0b0;
+                    constexpr uint8_t kNumPacketFilters = 1;
+                    constexpr uint8_t kPacketFilterIdentifier = 0;
+                    constexpr uint8_t kPacketFilterMatchAll = 0x01;
+
+                    uint8_t opOctet =
+                        static_cast<uint8_t>((kCreateOpCode << 5) | (kDefaultQosRule << 4) | kNumPacketFilters);
+                    ruleBody.appendOctet(opOctet);
+
+                    uint8_t directionBits = static_cast<uint8_t>(msg.cmd->psModifyRuleDirection.value());
+                    uint8_t packetFilterOctet =
+                        static_cast<uint8_t>((directionBits << 4) | (kPacketFilterIdentifier & 0x0F));
+                    ruleBody.appendOctet(packetFilterOctet);
+                    ruleBody.appendOctet(1); // packet filter contents length
+                    ruleBody.appendOctet(kPacketFilterMatchAll);
+
+                    ruleBody.appendOctet(msg.cmd->psModifyRulePrecedence.value());
+
+                    uint8_t segregationBit = msg.cmd->psModifyRuleSegregation.value() ? 1 : 0;
+                    uint8_t flowOctet = static_cast<uint8_t>((segregationBit << 6) | (msg.cmd->psModifyRuleQfi.value() & 0x3F));
+                    ruleBody.appendOctet(flowOctet);
+                }
+                else
+                {
+                    constexpr uint8_t kDeleteOpCode = 0b010;
+                    uint8_t opOctet = static_cast<uint8_t>(kDeleteOpCode << 5);
+                    ruleBody.appendOctet(opOctet);
+                }
+
+                OctetString rulesData{};
+                rulesData.appendOctet(msg.cmd->psModifyRuleId.value());
+                rulesData.appendOctet2(static_cast<uint16_t>(ruleBody.length()));
+                rulesData.append(ruleBody);
+                qosRules = nas::IEQoSRules{std::move(rulesData)};
+            }
+
             if (msg.cmd->psModifyQosFlows.has_value())
             {
                 auto flowBytes = OctetString::FromHex(*msg.cmd->psModifyQosFlows);
                 OctetView view{flowBytes.data(), static_cast<size_t>(flowBytes.length())};
                 qosFlows = nas::IEQoSFlowDescriptions::Decode(view, static_cast<int>(flowBytes.length()));
+            }
+
+            if (msg.cmd->psModifyFlowOp.has_value())
+            {
+                std::vector<nas::VQoSFlowDescription> generatedFlowDescriptions{};
+                generatedFlowDescriptions.reserve(msg.cmd->psModifyFlowQfis.size());
+
+                auto makeFlowParameters = [&]() -> std::vector<std::unique_ptr<nas::VQoSFlowParameter>> {
+                    std::vector<std::unique_ptr<nas::VQoSFlowParameter>> parameters{};
+
+                    if (msg.cmd->psModifyFlow5qi.has_value())
+                    {
+                        OctetString content{};
+                        content.appendOctet(*msg.cmd->psModifyFlow5qi);
+                        parameters.push_back(std::make_unique<nas::VQoSFlowParameter>(0x01, std::move(content)));
+                    }
+
+                    return parameters;
+                };
+
+                bool eBit = false;
+                if (*msg.cmd->psModifyFlowOp == nas::EQoSOperationCode::CREATE_NEW)
+                    eBit = true;
+                else if (*msg.cmd->psModifyFlowOp == nas::EQoSOperationCode::MODIFY_EXISTING)
+                    eBit = msg.cmd->psModifyFlowReplacement.value_or(true);
+
+                for (auto qfi : msg.cmd->psModifyFlowQfis)
+                {
+                    auto parameters = makeFlowParameters();
+                    generatedFlowDescriptions.emplace_back(static_cast<int>(qfi), *msg.cmd->psModifyFlowOp,
+                                                           static_cast<int>(parameters.size()), eBit,
+                                                           std::move(parameters));
+                }
+
+                qosFlows = nas::IEQoSFlowDescriptions{std::move(generatedFlowDescriptions)};
             }
         }
         catch (const std::exception &ex)

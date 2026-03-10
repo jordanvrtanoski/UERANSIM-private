@@ -27,6 +27,19 @@ enum class EHandoverMode
     XN
 };
 
+enum class EQoSRuleOperationCode : uint8_t
+{
+    CREATE_NEW = 0b001,
+    DELETE_EXISTING = 0b010,
+};
+
+enum class EQoSRuleDirection : uint8_t
+{
+    DOWNLINK = 0b01,
+    UPLINK = 0b10,
+    BIDIRECTIONAL = 0b11,
+};
+
 struct GnbCliCommand
 {
     enum PR
@@ -96,6 +109,16 @@ struct UeCliCommand
     std::optional<std::string> psModifyQosRules{};
     std::optional<std::string> psModifyQosFlows{};
     std::optional<int> psModifySmCause{};
+    std::optional<nas::EQoSOperationCode> psModifyFlowOp{};
+    std::vector<uint8_t> psModifyFlowQfis{};
+    std::optional<bool> psModifyFlowReplacement{};
+    std::optional<uint8_t> psModifyFlow5qi{};
+    std::optional<EQoSRuleOperationCode> psModifyRuleOp{};
+    std::optional<uint8_t> psModifyRuleId{};
+    std::optional<uint8_t> psModifyRulePrecedence{};
+    std::optional<uint8_t> psModifyRuleQfi{};
+    std::optional<bool> psModifyRuleSegregation{};
+    std::optional<EQoSRuleDirection> psModifyRuleDirection{};
 
     explicit UeCliCommand(PR present) : present(present)
     {

@@ -82,12 +82,6 @@ void NasSm::sendSmMessage(int psi, const nas::SmMessage &msg)
                 m.dnn = nas::utils::DnnFromApn(*session->apn);
         }
     }
-    else if (msg.messageType == nas::EMessageType::PDU_SESSION_MODIFICATION_REQUEST)
-    {
-        m.requestType = nas::IERequestType{};
-        m.requestType->requestType = nas::ERequestType::MODIFICATION_REQUEST;
-    }
-
     m_mm->deliverUlTransport(m, MapMsgTypeToHint(msg.messageType));
 }
 
