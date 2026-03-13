@@ -82,6 +82,14 @@ void NasSm::sendSmMessage(int psi, const nas::SmMessage &msg)
                 m.dnn = nas::utils::DnnFromApn(*session->apn);
         }
     }
+    else if (msg.messageType == nas::EMessageType::PDU_SESSION_MODIFICATION_REQUEST)
+    {
+        // TS 24.501 6.4.2.2(c)1: for UE-requested PDU session modification (except PS data off case),
+        // UL NAS TRANSPORT shall include Request Type = "modification request".
+        m.requestType = nas::IERequestType{};
+        m.requestType->requestType = nas::ERequestType::MODIFICATION_REQUEST;
+    }
+
     m_mm->deliverUlTransport(m, MapMsgTypeToHint(msg.messageType));
 }
 

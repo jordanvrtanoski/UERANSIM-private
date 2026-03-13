@@ -687,6 +687,9 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
 
             if (*cmd->psModifyRuleOp == EQoSRuleOperationCode::CREATE_NEW)
             {
+                if (ruleId != 0)
+                    CMD_ERR("For --rule-op create, --rule-id must be 0 per TS 24.501 (no QoS rule identifier assigned)")
+
                 if (!options.hasFlag(std::nullopt, "rule-precedence"))
                     CMD_ERR("--rule-precedence is required with --rule-op create")
                 if (!options.hasFlag(std::nullopt, "rule-qfi"))
@@ -737,6 +740,9 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
             }
             else
             {
+                if (ruleId == 0)
+                    CMD_ERR("For --rule-op delete, --rule-id must reference an existing rule (>0)")
+
                 if (options.hasFlag(std::nullopt, "rule-qfi") || options.hasFlag(std::nullopt, "rule-precedence") ||
                     options.hasFlag(std::nullopt, "rule-dir") || options.hasFlag(std::nullopt, "rule-seg"))
                 {
