@@ -9,6 +9,7 @@
 #include "cli_cmd.hpp"
 
 #include <algorithm>
+#include <arpa/inet.h>
 #include <cctype>
 #include <cstdint>
 #include <optional>
@@ -174,8 +175,9 @@ static opt::OptionsDescription DescForPsModify(const std::string &subCommand, co
                                        {entry.usageText},
                                        {"1 --flow-op modify --flow-qfi 1 --flow-mode replace --flow-5qi 9",
                                         "1 --flow-op delete --flow-qfi 1",
-                                        "1 --flow-op create --flow-qfi 0 --flow-5qi 9",
+                                        "1 --flow-op create --flow-qfi 2 --flow-5qi 1",
                                         "1 --rule-op create --rule-id 0 --rule-qfi 0 --rule-precedence 100 --rule-dir ul",
+                                        "1 --rule-op create --rule-id 0 --rule-qfi 2 --rule-precedence 100 --rule-dir bi --rule-remote-ipv4 8.8.8.8/32",
                                         "1 --flow-op create --flow-qfi 0 --flow-5qi 9 --rule-op create --rule-id 0 "
                                         "--rule-qfi 0 --rule-precedence 100 --rule-dir ul",
                                         "1 --qos-rules 010300020140"},
@@ -188,7 +190,8 @@ static opt::OptionsDescription DescForPsModify(const std::string &subCommand, co
     res.items.emplace_back(std::nullopt, "flow-op",
                            "Generate QoS flow description operation (modify|create|delete)", "op");
     res.items.emplace_back(std::nullopt, "flow-qfi",
-                           "QFI list for --flow-op (comma-separated). Use 0 for create as per TS 24.501.", "list");
+                           "QFI list for --flow-op (comma-separated). Use [1..63] for explicit QFI, or 0 for network-assigned on create.",
+                           "list");
     res.items.emplace_back(std::nullopt, "flow-mode",
                            "Flow update mode for --flow-op modify (replace|extend), default: replace", "mode");
     res.items.emplace_back(std::nullopt, "flow-5qi",
@@ -203,6 +206,8 @@ static opt::OptionsDescription DescForPsModify(const std::string &subCommand, co
                            "QoS rule precedence (0..255 except 80) for rule create", "value");
     res.items.emplace_back(std::nullopt, "rule-dir",
                            "Packet filter direction for generated match-all rule (ul|dl|bi), default: bi", "dir");
+    res.items.emplace_back(std::nullopt, "rule-remote-ipv4",
+                           "Packet filter remote IPv4 match (CIDR), e.g. 8.8.8.8/32", "cidr");
     res.items.emplace_back(std::nullopt, "rule-seg",
                            "Segregation bit for rule create (on|off), default: on", "state");
     res.items.emplace_back(std::nullopt, "sm-cause", "5GSM cause value (0..255)", "value");
@@ -605,12 +610,7 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
             if (!parseQfiList(options.getOption(std::nullopt, "flow-qfi"), cmd->psModifyFlowQfis, allowQfiZero))
                 CMD_ERR("Invalid --flow-qfi value, expected comma-separated QFI list in range [1,63], or 0 for create")
 
-            if (cmd->psModifyFlowOp == nas::EQoSOperationCode::CREATE_NEW)
-            {
-                if (cmd->psModifyFlowQfis.size() != 1 || cmd->psModifyFlowQfis[0] != 0)
-                    CMD_ERR("For --flow-op create, --flow-qfi must be exactly 0 per TS 24.501 (no QFI assigned)")
-            }
-            else
+            if (cmd->psModifyFlowOp != nas::EQoSOperationCode::CREATE_NEW)
             {
                 if (std::any_of(cmd->psModifyFlowQfis.begin(), cmd->psModifyFlowQfis.end(),
                                 [](uint8_t qfi) { return qfi == 0; }))
@@ -657,7 +657,8 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
 
         bool hasRuleFields = hasRuleOp || hasRuleId || options.hasFlag(std::nullopt, "rule-qfi") ||
                              options.hasFlag(std::nullopt, "rule-precedence") ||
-                             options.hasFlag(std::nullopt, "rule-dir") || options.hasFlag(std::nullopt, "rule-seg");
+                             options.hasFlag(std::nullopt, "rule-dir") || options.hasFlag(std::nullopt, "rule-seg") ||
+                             options.hasFlag(std::nullopt, "rule-remote-ipv4");
 
         if (hasRuleFields && cmd->psModifyQosRules.has_value())
             CMD_ERR("Do not combine --qos-rules with generated --rule-* options")
@@ -737,6 +738,30 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
                     else
                         CMD_ERR("Invalid --rule-dir value, possible values are: ul, dl, bi")
                 }
+
+                if (options.hasFlag(std::nullopt, "rule-remote-ipv4"))
+                {
+                    std::string cidr = options.getOption(std::nullopt, "rule-remote-ipv4");
+                    std::string ip = cidr;
+                    int prefixLen = 32;
+
+                    auto slashPos = cidr.find('/');
+                    if (slashPos != std::string::npos)
+                    {
+                        ip = cidr.substr(0, slashPos);
+                        int parsedPrefix = 0;
+                        auto prefixStr = cidr.substr(slashPos + 1);
+                        if (!utils::TryParseInt(prefixStr, parsedPrefix) || parsedPrefix < 0 || parsedPrefix > 32)
+                            CMD_ERR("Invalid --rule-remote-ipv4 prefix, expected CIDR prefix in range [0,32]")
+                        prefixLen = parsedPrefix;
+                    }
+
+                    in_addr addr{};
+                    if (inet_pton(AF_INET, ip.c_str(), &addr) != 1)
+                        CMD_ERR("Invalid --rule-remote-ipv4 address, expected IPv4 or CIDR (e.g. 8.8.8.8/32)")
+
+                    cmd->psModifyRuleRemoteIpv4 = ip + "/" + std::to_string(prefixLen);
+                }
             }
             else
             {
@@ -744,9 +769,10 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
                     CMD_ERR("For --rule-op delete, --rule-id must reference an existing rule (>0)")
 
                 if (options.hasFlag(std::nullopt, "rule-qfi") || options.hasFlag(std::nullopt, "rule-precedence") ||
-                    options.hasFlag(std::nullopt, "rule-dir") || options.hasFlag(std::nullopt, "rule-seg"))
+                    options.hasFlag(std::nullopt, "rule-dir") || options.hasFlag(std::nullopt, "rule-seg") ||
+                    options.hasFlag(std::nullopt, "rule-remote-ipv4"))
                 {
-                    CMD_ERR("--rule-qfi, --rule-precedence, --rule-dir, and --rule-seg are only valid with --rule-op create")
+                    CMD_ERR("--rule-qfi, --rule-precedence, --rule-dir, --rule-seg, and --rule-remote-ipv4 are only valid with --rule-op create")
                 }
             }
         }
@@ -764,12 +790,6 @@ static std::unique_ptr<UeCliCommand> UeCliParseImpl(const std::string &subCmd, c
         {
             CMD_ERR("At least one option is required: --qos-rules, --qos-flows, --flow-op/--flow-qfi, --rule-op/--rule-id, "
                     "or --sm-cause")
-        }
-
-        if (cmd->psModifyFlowOp == nas::EQoSOperationCode::CREATE_NEW && cmd->psModifyRuleOp == EQoSRuleOperationCode::CREATE_NEW)
-        {
-            if (cmd->psModifyRuleQfi.value_or(1) != 0)
-                CMD_ERR("For combined create flow+rule, --rule-qfi must be 0 (no QFI assigned)")
         }
 
         return cmd;

@@ -8,7 +8,10 @@
 
 #include "cmd_handler.hpp"
 
+#include <arpa/inet.h>
+#include <cstring>
 #include <exception>
+#include <stdexcept>
 
 #include <ue/app/task.hpp>
 #include <ue/nas/task.hpp>
@@ -36,6 +39,36 @@ static std::string SignalDescription(int dbm)
 
 namespace nr::ue
 {
+namespace
+{
+
+static bool ParseIpv4Cidr(const std::string &cidr, uint32_t &addrHost, uint32_t &maskHost)
+{
+    std::string ipPart = cidr;
+    int prefixLen = 32;
+
+    auto slashPos = cidr.find('/');
+    if (slashPos != std::string::npos)
+    {
+        ipPart = cidr.substr(0, slashPos);
+        std::string prefixPart = cidr.substr(slashPos + 1);
+        if (!utils::TryParseInt(prefixPart, prefixLen) || prefixLen < 0 || prefixLen > 32)
+            return false;
+    }
+
+    in_addr addr{};
+    if (inet_pton(AF_INET, ipPart.c_str(), &addr) != 1)
+        return false;
+
+    uint32_t addrNbo = 0;
+    std::memcpy(&addrNbo, &addr.s_addr, sizeof(addrNbo));
+
+    addrHost = ntohl(addrNbo);
+    maskHost = prefixLen == 0 ? 0u : (0xFFFFFFFFu << (32 - prefixLen));
+    return true;
+}
+
+} // namespace
 
 void UeCmdHandler::sendResult(const InetAddress &address, const std::string &output)
 {
@@ -218,6 +251,7 @@ void UeCmdHandler::handleCmdImpl(NmUeCliCommand &msg)
                     constexpr uint8_t kNumPacketFilters = 1;
                     constexpr uint8_t kPacketFilterIdentifier = 0;
                     constexpr uint8_t kPacketFilterMatchAll = 0x01;
+                    constexpr uint8_t kPacketFilterIpv4RemoteAddress = 0x10;
 
                     uint8_t opOctet =
                         static_cast<uint8_t>((kCreateOpCode << 5) | (kDefaultQosRule << 4) | kNumPacketFilters);
@@ -227,8 +261,26 @@ void UeCmdHandler::handleCmdImpl(NmUeCliCommand &msg)
                     uint8_t packetFilterOctet =
                         static_cast<uint8_t>((directionBits << 4) | (kPacketFilterIdentifier & 0x0F));
                     ruleBody.appendOctet(packetFilterOctet);
-                    ruleBody.appendOctet(1); // packet filter contents length
-                    ruleBody.appendOctet(kPacketFilterMatchAll);
+
+                    OctetString packetFilterContents{};
+                    if (msg.cmd->psModifyRuleRemoteIpv4.has_value())
+                    {
+                        uint32_t addrHost = 0;
+                        uint32_t maskHost = 0;
+                        if (!ParseIpv4Cidr(*msg.cmd->psModifyRuleRemoteIpv4, addrHost, maskHost))
+                            throw std::runtime_error("Invalid --rule-remote-ipv4 value");
+
+                        packetFilterContents.appendOctet(kPacketFilterIpv4RemoteAddress);
+                        packetFilterContents.appendOctet4(addrHost);
+                        packetFilterContents.appendOctet4(maskHost);
+                    }
+                    else
+                    {
+                        packetFilterContents.appendOctet(kPacketFilterMatchAll);
+                    }
+
+                    ruleBody.appendOctet(static_cast<uint8_t>(packetFilterContents.length()));
+                    ruleBody.append(packetFilterContents);
 
                     ruleBody.appendOctet(msg.cmd->psModifyRulePrecedence.value());
 

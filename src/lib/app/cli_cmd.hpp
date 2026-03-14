@@ -119,6 +119,7 @@ struct UeCliCommand
     std::optional<uint8_t> psModifyRuleQfi{};
     std::optional<bool> psModifyRuleSegregation{};
     std::optional<EQoSRuleDirection> psModifyRuleDirection{};
+    std::optional<std::string> psModifyRuleRemoteIpv4{};
 
     explicit UeCliCommand(PR present) : present(present)
     {
