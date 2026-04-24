@@ -8,6 +8,8 @@
 
 #include "cmd_handler.hpp"
 
+#include <set>
+
 #include <gnb/app/task.hpp>
 #include <gnb/gtp/task.hpp>
 #include <gnb/ngap/task.hpp>
@@ -15,7 +17,11 @@
 #include <gnb/rrc/task.hpp>
 #include <gnb/sctp/task.hpp>
 #include <gnb/xn/task.hpp>
+#include <lib/app/cli_base.hpp>
+#include <lib/app/proc_table.hpp>
 #include <utils/common.hpp>
+#include <utils/constants.hpp>
+#include <utils/io.hpp>
 #include <utils/printer.hpp>
 
 #define PAUSE_CONFIRM_TIMEOUT 3000
@@ -23,6 +29,86 @@
 
 namespace nr::gnb
 {
+
+static std::set<int> FindProcessesForCliLookup()
+{
+    std::set<int> res{};
+    for (const auto &file : io::GetEntries(cons::PROCESS_DIR))
+    {
+        if (!io::IsRegularFile(file))
+        {
+            auto name = io::GetStem(file);
+            if (!utils::IsNumeric(name))
+                continue;
+            res.insert(utils::ParseInt(name));
+        }
+    }
+    return res;
+}
+
+static std::optional<InetAddress> DiscoverNodeCliAddress(const std::string &nodeName)
+{
+    if (!io::Exists(cons::PROC_TABLE_DIR))
+        return std::nullopt;
+
+    auto processes = FindProcessesForCliLookup();
+    std::optional<uint16_t> foundPort{};
+
+    for (const auto &file : io::GetEntries(cons::PROC_TABLE_DIR))
+    {
+        if (!io::IsRegularFile(file))
+            continue;
+
+        auto entry = app::ProcTableEntry::Decode(io::ReadAllText(file));
+        if (processes.count(entry.pid) == 0)
+        {
+            io::Remove(file);
+            continue;
+        }
+
+        if (entry.major != cons::Major || entry.minor != cons::Minor || entry.patch != cons::Patch)
+            continue;
+
+        for (const auto &registeredNode : entry.nodes)
+        {
+            if (registeredNode == nodeName)
+            {
+                foundPort = entry.port;
+                break;
+            }
+        }
+
+        if (foundPort.has_value())
+            break;
+    }
+
+    if (!foundPort.has_value())
+        return std::nullopt;
+
+    return InetAddress{cons::CMD_SERVER_IP, *foundPort};
+}
+
+static uint32_t MakeHoTokenForCliOverride(int64_t amfUeNgapId)
+{
+    uint64_t value = static_cast<uint64_t>(amfUeNgapId);
+    uint32_t token = static_cast<uint32_t>(value ^ (value >> 32));
+    return token == 0 ? 1u : token;
+}
+
+static std::optional<std::string> SendCliCommandToNode(const std::string &nodeName, const std::string &command)
+{
+    auto targetAddr = DiscoverNodeCliAddress(nodeName);
+    if (!targetAddr.has_value())
+        return std::nullopt;
+
+    app::CliServer client{};
+    client.sendMessage(app::CliMessage::Command(*targetAddr, command, nodeName));
+    auto response = client.receiveMessage();
+    if (response.type == app::CliMessage::Type::RESULT)
+        return response.value;
+
+    return std::nullopt;
+}
 
 void GnbCmdHandler::sendResult(const InetAddress &address, const std::string &output)
 {
@@ -283,6 +369,11 @@ void GnbCmdHandler::handleCmdImpl(NmGnbCliCommand &msg)
 
         if (selectedMode == EHandoverMode::XN)
         {
+            if (msg.cmd->hoN2TargetPathSwitchDelayMs.has_value())
+            {
+                sendError(msg.address, "N2 target path switch delay override is only valid for N2 handover mode");
+                break;
+            }
             if (!xnConfigured)
             {
                 sendError(msg.address, "Xn handover mode is selected but no matching xnNeighbor is configured");
@@ -306,6 +397,25 @@ void GnbCmdHandler::handleCmdImpl(NmGnbCliCommand &msg)
             break;
         }
 
+        auto *ue = m_base->ngapTask->m_ueCtx[msg.cmd->ueId];
+        if (msg.cmd->hoN2TargetPathSwitchDelayMs.has_value())
+        {
+            if (ue->amfUeNgapId < 0)
+            {
+                sendError(msg.address, "UE has no AMF UE NGAP ID, cannot arm target-side N2 override");
+                break;
+            }
+            uint32_t overrideToken = MakeHoTokenForCliOverride(ue->amfUeNgapId);
+            std::string armCmd = "__ho-arm-n2-delay --token " + std::to_string(overrideToken) + " --delay-ms " +
+                                 std::to_string(*msg.cmd->hoN2TargetPathSwitchDelayMs);
+            auto armResult = SendCliCommandToNode(target->name, armCmd);
+            if (!armResult.has_value())
+            {
+                sendError(msg.address, "Failed to arm target-side N2 path switch delay override on node " + target->name);
+                break;
+            }
+        }
+
         auto token = m_base->ngapTask->startN2HandoverPhase1(msg.cmd->ueId, target->plmn, target->tac,
                                                              target->getGnbId(), target->gnbIdLength, target->nci,
                                                              target->name, target->linkIp);
@@ -315,8 +425,23 @@ void GnbCmdHandler::handleCmdImpl(NmGnbCliCommand &msg)
             break;
         }
 
-        sendResult(msg.address, "Handover triggered (mode=n2, token=" + std::to_string(*token) + ", target=" +
-                                    target->name + ", mode-source=" + modeSource + ", reason=" + selectionReason + ")");
+        std::string result = "Handover triggered (mode=n2, token=" + std::to_string(*token) + ", target=" + target->name +
+                             ", mode-source=" + modeSource + ", reason=" + selectionReason;
+        if (msg.cmd->hoN2TargetPathSwitchDelayMs.has_value())
+            result += ", n2-target-path-switch-delay-ms=" + std::to_string(*msg.cmd->hoN2TargetPathSwitchDelayMs);
+        result += ")";
+        sendResult(msg.address, result);
+        break;
+    }
+    case app::GnbCliCommand::HO_ARM_N2_DELAY: {
+        if (!msg.cmd->hoToken.has_value() || !msg.cmd->hoN2TargetPathSwitchDelayMs.has_value())
+        {
+            sendError(msg.address, "Missing internal handover delay override parameters");
+            break;
+        }
+
+        m_base->ngapTask->armN2TargetPathSwitchDelayOverride(*msg.cmd->hoToken, *msg.cmd->hoN2TargetPathSwitchDelayMs);
+        sendResult(msg.address, "armed");
         break;
     }
     case app::GnbCliCommand::HO_STATUS: {
@@ -326,6 +451,7 @@ void GnbCmdHandler::handleCmdImpl(NmGnbCliCommand &msg)
         int64_t tPrep = m_base->config->ngapTimers.tngRelocPrepMs;
         int64_t tOverall = m_base->config->ngapTimers.tngRelocOverallMs;
         int64_t tPreparedTtl = m_base->config->ngapTimers.preparedTtlMs;
+        int64_t n2PathSwitchDelay = m_base->config->ngapTimers.n2TargetPathSwitchDelayMs;
 
         Json src = Json::Arr({});
         for (const auto &it : m_base->ngapTask->m_ho1SourceByUe)
@@ -371,6 +497,17 @@ void GnbCmdHandler::handleCmdImpl(NmGnbCliCommand &msg)
             int64_t overallRem = tOverall - ageMs;
             if (overallRem < 0)
                 overallRem = 0;
+            int64_t delayRem = 0;
+            std::string state = "PREPARED";
+            if (st.completeReceived && st.pathSwitchSent)
+                state = "PATH_SWITCH_SENT";
+            else if (st.completeReceived && st.pathSwitchDelayUntilMs > nowMs)
+            {
+                state = "WAIT_PATH_SWITCH_DELAY";
+                delayRem = st.pathSwitchDelayUntilMs - nowMs;
+            }
+            else if (st.completeReceived)
+                state = "COMPLETE_RX";
 
             tgt.push(Json::Obj({
                 {"token", st.token},
@@ -378,11 +515,20 @@ void GnbCmdHandler::handleCmdImpl(NmGnbCliCommand &msg)
                 {"ue-sti", "0x" + utils::IntToHex(st.ueSti)},
                 {"local-nci", m_base->config->nci},
                 {"local-nci-hex", "0x" + utils::IntToHex(static_cast<uint64_t>(m_base->config->nci))},
+                {"state", state},
                 {"prepared-at-ms", st.preparedAtMs},
+                {"complete-at-ms", st.completeAtMs},
                 {"age-ms", ageMs},
                 {"pdu-count", static_cast<int>(st.pduInfos.size())},
                 {"complete-received", st.completeReceived},
+                {"ho-notify-sent", st.hoNotifySent},
                 {"path-switch-sent", st.pathSwitchSent},
+                {"path-switch-delay-configured-ms", n2PathSwitchDelay},
+                {"path-switch-delay-override-ms", st.pathSwitchDelayOverrideMs.has_value()
+                                                      ? Json(*st.pathSwitchDelayOverrideMs)
+                                                      : Json()},
+                {"path-switch-delay-until-ms", st.pathSwitchDelayUntilMs},
+                {"path-switch-delay-ms-remaining", delayRem},
                 {"prepared-ttl-ms-remaining", prepRem},
                 {"TNGRELOCoverall-ms-remaining", overallRem},
             }));

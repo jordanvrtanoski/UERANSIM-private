@@ -353,6 +353,9 @@ struct NgapTimerConfig
     // Simulator robustness timers (configured in milliseconds)
     int64_t preparedTtlMs{15000};
     int64_t unmatchedCompleteTtlMs{5000};
+
+    // Simulator handover staging controls (configured in milliseconds)
+    int64_t n2TargetPathSwitchDelayMs{0};
 };
 
 struct GnbConfig

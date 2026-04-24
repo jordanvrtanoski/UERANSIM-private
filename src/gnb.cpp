@@ -158,6 +158,7 @@ static nr::gnb::GnbConfig *ReadConfigYaml()
             "TNGRELOCoverall",
             "preparedTtlMs",
             "unmatchedCompleteTtlMs",
+            "n2TargetPathSwitchDelayMs",
         };
 
         for (const auto &kv : t)
@@ -166,7 +167,7 @@ static nr::gnb::GnbConfig *ReadConfigYaml()
             if (!kAllowedKeys.count(key))
                 throw std::runtime_error("Field 'ngapTimers' has unknown key '" + key +
                                          "'. Allowed keys: TNGRELOCprep, TNGRELOCoverall, preparedTtlMs, "
-                                         "unmatchedCompleteTtlMs.");
+                                         "unmatchedCompleteTtlMs, n2TargetPathSwitchDelayMs.");
         }
 
         if (yaml::HasField(t, "TNGRELOCprep"))
@@ -178,6 +179,9 @@ static nr::gnb::GnbConfig *ReadConfigYaml()
             result->ngapTimers.preparedTtlMs = yaml::GetInt32(t, "preparedTtlMs", 1, 600000);
         if (yaml::HasField(t, "unmatchedCompleteTtlMs"))
             result->ngapTimers.unmatchedCompleteTtlMs = yaml::GetInt32(t, "unmatchedCompleteTtlMs", 1, 600000);
+        if (yaml::HasField(t, "n2TargetPathSwitchDelayMs"))
+            result->ngapTimers.n2TargetPathSwitchDelayMs =
+                yaml::GetInt32(t, "n2TargetPathSwitchDelayMs", 0, 600000);
     }
 
     if (yaml::HasField(config, "handoverPolicy"))

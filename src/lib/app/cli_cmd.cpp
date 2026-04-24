@@ -67,11 +67,19 @@ static std::string DumpCommands(const OrderedMap<std::string, CmdEntry> &entryTa
 {
     size_t maxLength = 0;
     for (auto &item : entryTable)
+    {
+        if (item.rfind("__", 0) == 0)
+            continue;
         maxLength = std::max(maxLength, item.size());
+    }
 
     std::stringstream ss{};
     for (auto &item : entryTable)
+    {
+        if (item.rfind("__", 0) == 0)
+            continue;
         ss << item << std::string(maxLength - item.size(), ' ') << " | " << entryTable[item].descriptionText << "\n";
+    }
     std::string output = ss.str();
 
     utils::Trim(output);
@@ -225,7 +233,8 @@ static opt::OptionsDescription DescForHoStart(const std::string &subCommand, con
                                        {entry.usageText},
                                        {"1 --target-nci 0x0000000010 --mode auto",
                                         "1 --target-name UERANSIM-gnb-999-1-2 --mode xn",
-                                        "1 --target-cell-id 16 --mode n2"},
+                                        "1 --target-cell-id 16 --mode n2",
+                                        "1 --target-name gnb-20 --mode n2 --n2-target-path-switch-delay-ms 3000"},
                                        entry.helpIfEmpty,
                                        true};
 
@@ -233,6 +242,25 @@ static opt::OptionsDescription DescForHoStart(const std::string &subCommand, con
     res.items.emplace_back(std::nullopt, "target-name", "Target gNB neighbor name", "name");
     res.items.emplace_back(std::nullopt, "target-cell-id", "Target cell ID (as derived from NCI)", "cell-id");
     res.items.emplace_back(std::nullopt, "mode", "Handover mode selection (auto|n2|xn)", "mode");
+    res.items.emplace_back(std::nullopt, "n2-target-path-switch-delay-ms",
+                           "One-shot override for target-side N2 path switch delay in milliseconds", "ms");
+    return res;
+}
+
+static opt::OptionsDescription DescForHoArmN2Delay(const std::string &subCommand, const CmdEntry &entry)
+{
+    auto res = opt::OptionsDescription{{},
+                                       {},
+                                       entry.descriptionText,
+                                       {},
+                                       subCommand,
+                                       {entry.usageText},
+                                       {},
+                                       entry.helpIfEmpty,
+                                       true};
+
+    res.items.emplace_back(std::nullopt, "token", "Internal N2 handover token", "token");
+    res.items.emplace_back(std::nullopt, "delay-ms", "One-shot path switch delay override in milliseconds", "ms");
     return res;
 }
 
@@ -248,8 +276,12 @@ static OrderedMap<std::string, CmdEntry> g_gnbCmdEntries = {
     {"ue-count", {"Print the total number of UEs connected the this gNB", "", DefaultDesc, false}},
     {"ue-release", {"Request a UE context release for the given UE", "<ue-id>", DefaultDesc, false}},
     {"ho-start",
-     {"Trigger a handover (mode: auto|n2|xn)", "<ue-id> --target-... <value> [--mode <auto|n2|xn>]", DescForHoStart,
+     {"Trigger a handover (mode: auto|n2|xn)",
+      "<ue-id> --target-... <value> [--mode <auto|n2|xn>] [--n2-target-path-switch-delay-ms <ms>]", DescForHoStart,
       true}},
+    {"__ho-arm-n2-delay",
+     {"Internal: arm one-shot target-side N2 path switch delay", "--token <token> --delay-ms <ms>",
+      DescForHoArmN2Delay, true}},
     {"ho-status", {"Show active handover state (debug)", "", DefaultDesc, false}},
     {"ho-cancel", {"Cancel an in-progress handover", "<ue-id>", DefaultDesc, true}},
     {"xn-peers", {"Show configured Xn peers and SCTP states", "", DefaultDesc, false}},
@@ -370,12 +402,46 @@ static std::unique_ptr<GnbCliCommand> GnbCliParseImpl(const std::string &subCmd,
             else
                 CMD_ERR("Invalid --mode value, possible values are: auto, n2, xn")
         }
+        if (hasOpt("n2-target-path-switch-delay-ms"))
+        {
+            int64_t delayMs = 0;
+            if (!TryParseInt64Auto(getOpt("n2-target-path-switch-delay-ms"), delayMs) || delayMs < 0 || delayMs > 600000)
+                CMD_ERR("Invalid --n2-target-path-switch-delay-ms value")
+            cmd->hoN2TargetPathSwitchDelayMs = delayMs;
+        }
 
         if (selectorCount == 0)
             CMD_ERR("Target selector is required: --target-nci, --target-name, or --target-cell-id")
         if (selectorCount > 1)
             CMD_ERR("Only one target selector is allowed: --target-nci, --target-name, or --target-cell-id")
 
+        return cmd;
+    }
+    else if (subCmd == "__ho-arm-n2-delay")
+    {
+        auto cmd = std::make_unique<GnbCliCommand>(GnbCliCommand::HO_ARM_N2_DELAY);
+
+        auto hasOpt = [&options](const char *name) {
+            return options.hasFlag(std::nullopt, std::optional<std::string>{std::string{name}});
+        };
+        auto getOpt = [&options](const char *name) {
+            return options.getOption(std::nullopt, std::optional<std::string>{std::string{name}});
+        };
+
+        if (!hasOpt("token"))
+            CMD_ERR("Missing --token")
+        if (!hasOpt("delay-ms"))
+            CMD_ERR("Missing --delay-ms")
+
+        int64_t token = 0;
+        int64_t delayMs = 0;
+        if (!TryParseInt64Auto(getOpt("token"), token) || token <= 0 || token > 0xFFFFFFFFll)
+            CMD_ERR("Invalid --token value")
+        if (!TryParseInt64Auto(getOpt("delay-ms"), delayMs) || delayMs < 0 || delayMs > 600000)
+            CMD_ERR("Invalid --delay-ms value")
+
+        cmd->hoToken = static_cast<uint32_t>(token);
+        cmd->hoN2TargetPathSwitchDelayMs = delayMs;
         return cmd;
     }
     else if (subCmd == "ho-status")

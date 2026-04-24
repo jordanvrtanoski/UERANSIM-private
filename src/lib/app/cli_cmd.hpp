@@ -52,6 +52,7 @@ struct GnbCliCommand
         UE_COUNT,
         UE_RELEASE_REQ,
         HO_START,
+        HO_ARM_N2_DELAY,
         HO_STATUS,
         HO_CANCEL,
         XN_PEERS,
@@ -68,6 +69,8 @@ struct GnbCliCommand
     std::optional<std::string> hoTargetName{};
     std::optional<int> hoTargetCellId{};
     std::optional<EHandoverMode> hoMode{};
+    std::optional<int64_t> hoN2TargetPathSwitchDelayMs{};
+    std::optional<uint32_t> hoToken{};
 
     explicit GnbCliCommand(PR present) : present(present)
     {

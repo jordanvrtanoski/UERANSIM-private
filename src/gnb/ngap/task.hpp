@@ -167,8 +167,18 @@ class NgapTask : public NtsTask
         std::vector<HoPduInfo> pduInfos{};
         asn::Unique<ASN_NGAP_UESecurityCapabilities> ueSecurityCapabilities{};
         int64_t preparedAtMs{};
+        int64_t completeAtMs{};
+        int64_t pathSwitchDelayUntilMs{};
+        std::optional<int64_t> pathSwitchDelayOverrideMs{};
         bool completeReceived{};
+        bool hoNotifySent{};
         bool pathSwitchSent{};
+    };
+
+    struct ArmedPathSwitchDelayOverride
+    {
+        int64_t delayMs{};
+        int64_t armedAtMs{};
     };
 
     uint32_t m_ho1TokenCounter{};
@@ -176,6 +186,7 @@ class NgapTask : public NtsTask
     std::unordered_map<uint32_t, Ho1TargetState> m_ho1TargetByToken{};
     std::unordered_map<uint32_t, int64_t> m_ho1UnmatchedCompleteByToken{};
     std::unordered_map<int, int64_t> m_ho1CancelSentAtMsByUe{};
+    std::unordered_map<uint32_t, ArmedPathSwitchDelayOverride> m_ho1ArmedPathSwitchDelayByToken{};
 
   public:
     explicit NgapTask(TaskBase *base);
@@ -183,6 +194,7 @@ class NgapTask : public NtsTask
     void requestContextReleaseForXnHandover(int ueId, bool isSuccess);
     bool getXnSourceUeSnapshot(int ueId, XnSourceUeSnapshot &snapshot, std::string &error) const;
     bool prepareXnTargetHandover(const XnTargetPrepContext &context, std::string &error);
+    void armN2TargetPathSwitchDelayOverride(uint32_t token, int64_t delayMs);
 
   protected:
     void onStart() override;
@@ -266,6 +278,7 @@ class NgapTask : public NtsTask
     void handlePrivateMobilityRx(int ueId, OctetString &&payload);
     void handleHandoverComplete(int ueId);
     bool bindHandoverTargetUe(int ueId, Ho1TargetState &st);
+    void triggerPathSwitchAfterCompletion(Ho1TargetState &st, bool allowDelay);
     void sendHandoverNotify(int ueId);
     void sendHandoverFailure(int ueId, NgapCause cause);
     void sendHandoverFailureDirect(int amfId, uint16_t stream, int64_t amfUeNgapId, int64_t ranUeNgapId,

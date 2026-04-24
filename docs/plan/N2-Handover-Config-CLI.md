@@ -51,10 +51,13 @@ The following timers are defined by 3GPP TS 38.413 and are configurable in the g
 ngapTimers:
   TNGRELOCprep: 5000
   TNGRELOCoverall: 15000
+  n2TargetPathSwitchDelayMs: 0
 ```
 
 Notes:
 - These keys intentionally match the 3GPP timer names (`TNGRELOCprep`, `TNGRELOCoverall`).
+- `n2TargetPathSwitchDelayMs` is a simulator-only delay injected on the **target** gNB after UE handover completion and before
+  `PATH SWITCH REQUEST`. It is intended for controlled buffering/late-switch testing and is not a 3GPP timer.
 - Additional simulator-only TTLs may also exist (e.g. `preparedTtlMs`) but are not 3GPP timers.
 
 ## 2.4 Handover Policy Configuration (Mode Selection)
@@ -97,6 +100,7 @@ Minimum command set:
 - `ho-start <ue-id> --target-nci <hex|dec> [--mode <auto|n2|xn>]`
 - `ho-start <ue-id> --target-name <name> [--mode <auto|n2|xn>]`
 - `ho-start <ue-id> --target-cell-id <cellId> [--mode <auto|n2|xn>]`
+- `ho-start <ue-id> ... --mode n2 --n2-target-path-switch-delay-ms <ms>`
 - `ho-status`
 - `ho-cancel <ue-id>`
 - `xn-peers`
@@ -111,9 +115,17 @@ Current Phase‑1 CLI requires **exactly one** target selector per `ho-start` (f
 - Target selector is missing or cannot be resolved.
 - Target resolves to the source itself (unless explicitly allowed for testing).
 - `--mode` is not one of `auto|n2|xn`.
+- `--n2-target-path-switch-delay-ms` is negative, too large, or used with a selected Xn handover mode.
 - `--mode xn` is requested but no matching `xnNeighbors` peer exists.
 - `--mode xn` is requested but matching peer is not connected/setup-complete.
 - `ho-cancel` is requested but there is no active source-side handover transaction in either N2 or Xn path.
+
+Per-command N2 delay override:
+- `--n2-target-path-switch-delay-ms` is a **one-shot** override for the target-side delay inserted after
+  `HandoverNotify` and before `PathSwitchRequest`.
+- The source gNB arms the override on the target gNB over a simulator-local CLI side channel keyed by the deterministic
+  handover token derived from `AMF-UE-NGAP-ID`.
+- NGAP message structures remain unchanged; the override is not encoded into any 3GPP IE.
 
 ### 3.4 Debug outputs
 `ho-status` should display at least:

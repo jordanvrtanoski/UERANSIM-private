@@ -57,6 +57,7 @@ Json ToJson(const GnbConfig &v)
              {"TNGRELOCoverall", v.ngapTimers.tngRelocOverallMs},
              {"preparedTtlMs", v.ngapTimers.preparedTtlMs},
              {"unmatchedCompleteTtlMs", v.ngapTimers.unmatchedCompleteTtlMs},
+             {"n2TargetPathSwitchDelayMs", v.ngapTimers.n2TargetPathSwitchDelayMs},
          })},
         {"ngap-ip", v.ngapIp},
         {"gtp-ip", v.gtpIp},

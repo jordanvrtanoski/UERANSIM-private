@@ -62,6 +62,7 @@
 #include <asn/ngap/ASN_NGAP_ProtocolExtensionField.h>
 #include <asn/ngap/ASN_NGAP_QosFlowItemWithDataForwarding.h>
 #include <asn/ngap/ASN_NGAP_QosFlowAcceptedItem.h>
+#include <asn/ngap/ASN_NGAP_QosFlowToBeForwardedList.h>
 #include <asn/ngap/ASN_NGAP_QosFlowSetupRequestItem.h>
 #include <asn/ngap/ASN_NGAP_SourceNGRANNode-ToTargetNGRANNode-TransparentContainer.h>
 #include <asn/ngap/ASN_NGAP_TargetNGRANNode-ToSourceNGRANNode-TransparentContainer.h>
@@ -119,6 +120,17 @@ static uint32_t MakeHoTokenFromAmfUeNgapId(int64_t amfUeNgapId, uint32_t fallbac
     if (token == 0)
         token = fallback;
     return token;
+}
+
+void NgapTask::armN2TargetPathSwitchDelayOverride(uint32_t token, int64_t delayMs)
+{
+    ArmedPathSwitchDelayOverride override{};
+    override.delayMs = delayMs;
+    override.armedAtMs = utils::CurrentTimeMillis();
+    m_ho1ArmedPathSwitchDelayByToken[token] = override;
+
+    m_logger->info("handover ho.role=target ho.ngap.event=path_switch_delay_override_arm ho.token=%u ho.delay_ms=%ld",
+                   token, delayMs);
 }
 
 static bool IsSupportedHandoverRequestIe(int64_t id)
@@ -502,7 +514,11 @@ bool NgapTask::prepareXnTargetHandover(const XnTargetPrepContext &context, std::
     st.ranUeNgapId = ++m_ueNgapIdCounter;
     st.ueAmbr = context.ueAmbr;
     st.preparedAtMs = utils::CurrentTimeMillis();
+    st.completeAtMs = 0;
+    st.pathSwitchDelayUntilMs = 0;
+    st.pathSwitchDelayOverrideMs = std::nullopt;
     st.completeReceived = false;
+    st.hoNotifySent = false;
     st.pathSwitchSent = false;
 
     std::unordered_set<int> seenPsi{};
@@ -660,7 +676,11 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
     st.amfUeNgapId = amfUeNgapId;
     st.ranUeNgapId = ranUeNgapId;
     st.preparedAtMs = utils::CurrentTimeMillis();
+    st.completeAtMs = 0;
+    st.pathSwitchDelayUntilMs = 0;
+    st.pathSwitchDelayOverrideMs = std::nullopt;
     st.completeReceived = false;
+    st.hoNotifySent = false;
     st.pathSwitchSent = false;
 
     auto *ieAmbr = asn::ngap::GetProtocolIe(msg, ASN_NGAP_ProtocolIE_ID_id_UEAggregateMaximumBitRate);
@@ -710,6 +730,14 @@ void NgapTask::receiveHandoverRequest(int amfId, uint16_t stream, ASN_NGAP_Hando
             asn::Free(asn_DEF_ASN_NGAP_SourceNGRANNode_ToTargetNGRANNode_TransparentContainer, s2t);
             return;
         }
+    }
+
+    if (auto itOverride = m_ho1ArmedPathSwitchDelayByToken.find(token); itOverride != m_ho1ArmedPathSwitchDelayByToken.end())
+    {
+        st.pathSwitchDelayOverrideMs = itOverride->second.delayMs;
+        m_logger->info("handover ho.role=target ho.ngap.event=path_switch_delay_override_apply ho.token=%u ho.delay_ms=%ld",
+                       token, itOverride->second.delayMs);
+        m_ho1ArmedPathSwitchDelayByToken.erase(itOverride);
     }
 
     std::vector<ASN_NGAP_PDUSessionResourceAdmittedItem *> admittedList;
@@ -1084,6 +1112,29 @@ void NgapTask::receiveHandoverCommand(int amfId, ASN_NGAP_HandoverCommand *msg)
                                    "ho.warn=invalid_gtp_pair ho.psi=%ld ho.action=ignore_forwarding",
                                    ue->ctxId, static_cast<long>(item->pDUSessionID));
                 }
+                else
+                {
+                    auto address =
+                        asn::GetOctetString(gtp->transportLayerAddress);
+                    uint32_t teid = static_cast<uint32_t>(asn::GetOctet4(gtp->gTP_TEID));
+                    std::string addressStr = utils::OctetStringToIp(address);
+                    int forwardedQfiCount = 0;
+                    if (transfer->qosFlowToBeForwardedList)
+                        forwardedQfiCount = transfer->qosFlowToBeForwardedList->list.count;
+
+                    m_logger->info("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d "
+                                   "ho.forwarding=present ho.psi=%ld ho.forwarding.dl_ip=%s ho.forwarding.dl_teid=%u "
+                                   "ho.forwarding.qfi_count=%d",
+                                   ue->ctxId, static_cast<long>(item->pDUSessionID), addressStr.c_str(), teid,
+                                   forwardedQfiCount);
+                }
+            }
+            else if (transfer->qosFlowToBeForwardedList && transfer->qosFlowToBeForwardedList->list.count > 0)
+            {
+                m_logger->info("handover ho.role=source ho.ngap.event=ho_command_rx ho.ue_id=%d "
+                               "ho.forwarding=qfi_list_only ho.psi=%ld ho.forwarding.qfi_count=%d",
+                               ue->ctxId, static_cast<long>(item->pDUSessionID),
+                               transfer->qosFlowToBeForwardedList->list.count);
             }
 
             asn::Free(asn_DEF_ASN_NGAP_HandoverCommandTransfer, transfer);
@@ -1327,6 +1378,54 @@ bool NgapTask::bindHandoverTargetUe(int ueId, Ho1TargetState &st)
     return true;
 }
 
+void NgapTask::triggerPathSwitchAfterCompletion(Ho1TargetState &st, bool allowDelay)
+{
+    if (st.ueId <= 0)
+        return;
+
+    if (!st.hoNotifySent)
+    {
+        sendHandoverNotify(st.ueId);
+        st.hoNotifySent = true;
+    }
+
+    if (st.pathSwitchSent)
+        return;
+
+    int64_t delayMs = 0;
+    if (allowDelay)
+        delayMs = st.pathSwitchDelayOverrideMs.has_value() ? *st.pathSwitchDelayOverrideMs
+                                                           : m_base->config->ngapTimers.n2TargetPathSwitchDelayMs;
+    int64_t nowMs = utils::CurrentTimeMillis();
+    int64_t ageMs = nowMs - st.preparedAtMs;
+    int64_t overallBudgetMs = m_base->config->ngapTimers.tngRelocOverallMs;
+    int64_t overallRemainingMs = overallBudgetMs - ageMs;
+    if (overallRemainingMs < 0)
+        overallRemainingMs = 0;
+
+    if (delayMs > 0)
+    {
+        st.pathSwitchDelayUntilMs = nowMs + delayMs;
+        m_logger->info("handover ho.role=target ho.ngap.event=path_switch_delay_arm ho.ue_id=%d ho.token=%u "
+                       "ho.delay_ms=%ld ho.overall_ms_remaining=%ld ho.delay_source=%s",
+                       st.ueId, st.token, delayMs, overallRemainingMs,
+                       st.pathSwitchDelayOverrideMs.has_value() ? "cli" : "config");
+
+        if (delayMs >= overallRemainingMs && overallRemainingMs > 0)
+        {
+            m_logger->warn("handover ho.role=target ho.ngap.event=path_switch_delay_arm ho.ue_id=%d ho.token=%u "
+                           "ho.warn=delay_exceeds_overall_budget ho.delay_ms=%ld ho.overall_ms_remaining=%ld ho.delay_source=%s",
+                           st.ueId, st.token, delayMs, overallRemainingMs,
+                           st.pathSwitchDelayOverrideMs.has_value() ? "cli" : "config");
+        }
+        return;
+    }
+
+    st.pathSwitchDelayUntilMs = 0;
+    st.pathSwitchSent = true;
+    sendPathSwitchRequest(st.ueId, st);
+}
+
 void NgapTask::handlePrivateMobilityRx(int ueId, OctetString &&payload)
 {
     auto decoded = rls::ho1::Decode(payload);
@@ -1468,6 +1567,7 @@ void NgapTask::handlePrivateMobilityRx(int ueId, OctetString &&payload)
         return;
     }
     st.completeReceived = true;
+    st.completeAtMs = utils::CurrentTimeMillis();
 
     if (st.ueId == 0)
     {
@@ -1490,9 +1590,7 @@ void NgapTask::handlePrivateMobilityRx(int ueId, OctetString &&payload)
     }
 
     m_logger->debug("handover ho.role=target ho.state=COMPLETE_RX ho.ue_id=%d ho.token=%u", st.ueId, token);
-    sendHandoverNotify(st.ueId);
-    st.pathSwitchSent = true;
-    sendPathSwitchRequest(st.ueId, st);
+    triggerPathSwitchAfterCompletion(st, true);
 }
 
 void NgapTask::handleHandoverComplete(int ueId)
@@ -1523,12 +1621,11 @@ void NgapTask::handleHandoverComplete(int ueId)
     }
 
     st.completeReceived = true;
+    st.completeAtMs = utils::CurrentTimeMillis();
     m_logger->info("handover ho.role=target ho.event=complete_rx ho.ue_id=%d ho.token=%u", ueId, st.token);
     m_logger->debug("handover ho.role=target ho.state=COMPLETE_RX ho.ue_id=%d ho.token=%u", ueId, st.token);
 
-    sendHandoverNotify(ueId);
-    st.pathSwitchSent = true;
-    sendPathSwitchRequest(ueId, st);
+    triggerPathSwitchAfterCompletion(st, true);
 }
 
 void NgapTask::sendHandoverNotify(int ueId)
@@ -1734,6 +1831,14 @@ void NgapTask::hoHousekeeping(int64_t nowMs)
     for (auto it = m_ho1TargetByToken.begin(); it != m_ho1TargetByToken.end();)
     {
         auto &st = it->second;
+        if (st.completeReceived && !st.pathSwitchSent && st.pathSwitchDelayUntilMs > 0 && nowMs >= st.pathSwitchDelayUntilMs)
+        {
+            int64_t delayMs = st.completeAtMs > 0 ? (st.pathSwitchDelayUntilMs - st.completeAtMs) : 0;
+            m_logger->info("handover ho.role=target ho.ngap.event=path_switch_delay_expire ho.ue_id=%d ho.token=%u "
+                           "ho.delay_ms=%ld",
+                           st.ueId, st.token, delayMs);
+            triggerPathSwitchAfterCompletion(st, false);
+        }
         if (!st.completeReceived && nowMs - st.preparedAtMs > preparedTtlMs)
         {
             int64_t ageMs = nowMs - st.preparedAtMs;
@@ -1784,6 +1889,22 @@ void NgapTask::hoHousekeeping(int64_t nowMs)
         }
         else
             ++it;
+    }
+
+    int64_t armedTtlMs =
+        std::max(m_base->config->ngapTimers.tngRelocPrepMs,
+                 std::max(m_base->config->ngapTimers.tngRelocOverallMs, m_base->config->ngapTimers.preparedTtlMs));
+    for (auto it = m_ho1ArmedPathSwitchDelayByToken.begin(); it != m_ho1ArmedPathSwitchDelayByToken.end();)
+    {
+        if (nowMs - it->second.armedAtMs > armedTtlMs)
+        {
+            m_logger->warn("handover ho.role=target ho.ngap.event=path_switch_delay_override_expire ho.token=%u "
+                           "ho.delay_ms=%ld ho.ttl_ms=%ld",
+                           it->first, it->second.delayMs, armedTtlMs);
+            it = m_ho1ArmedPathSwitchDelayByToken.erase(it);
+            continue;
+        }
+        ++it;
     }
 }
 
